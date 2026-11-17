@@ -542,7 +542,6 @@ const FREE_SUBDOMAIN_SUFFIXES = [
   { suffix: 'dpdns.org', provider: 'digitalplat' },
   { suffix: 'us.kg', provider: 'digitalplat' },
   { suffix: 'xx.kg', provider: 'digitalplat' },
-  { suffix: 'qd.je', provider: 'digitalplat' },
   { suffix: 'indevs.in', provider: 'stackryze' },
   { suffix: 'sryze.cc', provider: 'stackryze' },
   { suffix: 'ryzedns.org', provider: 'stackryze' },
@@ -553,14 +552,6 @@ const FREE_SUBDOMAIN_SUFFIXES = [
   { suffix: 'cc.cd', provider: 'dnshe' },
   { suffix: 'bot.cd', provider: 'dnshe' },
   { suffix: 'ccwu.cc', provider: 'dnshe' },
-  // 仅支持手动录入：这些共享免费子域名没有可稳定依赖的公开注册信息接口。
-  { suffix: 'cloudns.org', provider: 'manual-cloudns' },
-  { suffix: 'cloudns.biz', provider: 'manual-cloudns' },
-  { suffix: 'cloudns.info', provider: 'manual-cloudns' },
-  { suffix: 'cloudns.us', provider: 'manual-cloudns' },
-  { suffix: 'cloudns.eu', provider: 'manual-cloudns' },
-  { suffix: 'cloudns.in', provider: 'manual-cloudns' },
-  { suffix: 'eu.org', provider: 'manual-euorg' },
 ];
 
 export function getFreeSubdomainProvider(domainName) {
@@ -585,7 +576,6 @@ async function getWhoisQueryFunction(domainName) {
   if (provider === 'digitalplat') return queryDigitalPlatWhois;
   if (provider === 'stackryze') return queryStackryzeWhois;
   if (provider === 'dnshe') return queryDnsheWhois;
-  if (provider === 'manual-cloudns' || provider === 'manual-euorg') return null;
 
   // 一级域名：通过 IANA RDAP Bootstrap 自动发现任意已登记 TLD 的权威 RDAP 服务。
   if (await isRegistrableDomainName(lowerDomain)) return queryFirstLevelDomain;
@@ -1859,16 +1849,7 @@ async function probeDomainWhoisChannels(domain) {
   let provider = 'unsupported';
   let methods = [];
 
-  if (freeProvider === 'manual-cloudns' || freeProvider === 'manual-euorg') {
-    provider = freeProvider;
-    methods = [{
-      id: 'manual-entry',
-      name: '手动录入',
-      ok: null,
-      durationMs: 0,
-      result: { success: false, error: '该免费子域名没有可依赖的公开 WHOIS/RDAP 查询接口，请手动填写注册日期和到期日期。' }
-    }];
-  } else if (freeProvider === 'dnshe') {
+  if (freeProvider === 'dnshe') {
     provider = 'dnshe';
     methods = await Promise.all([
       runWhoisProbeMethod(
@@ -4506,7 +4487,7 @@ const getHTMLContent = (title) => `
                                     <i class="iconfont icon-qingchu"></i><span> 清除</span>
                                 </button>
                             </div>
-                            <div class="form-text">输入域名后点击“查询”可自动填充注册信息；若没有可靠查询接口（如 EU.org、ClouDNS），仍可直接手动填写注册时间和到期日期后添加。</div>
+                            <div class="form-text">输入域名后点击"查询"可自动填充注册信息</div>
                             <div id="whoisQueryStatus" class="mt-2" style="display: none;"></div>
                         </div>
                         <div class="mb-3">
@@ -4561,15 +4542,16 @@ const getHTMLContent = (title) => `
                                     <option value="year" selected>年</option>
                                     <option value="month">月</option>
                                     <option value="day">日</option>
+                                    <option value="permanent">永久</option>
                                 </select>
                             </div>
                             <div class="form-text">域名的常规续期周期，用于计算进度条和到期日期</div>
                         </div>
                         
                         <div class="mb-3">
-                            <label for="expiryDate" class="form-label"><i class="iconfont icon-calendar-days"></i> 到期日期 <span style="color: red;">*</span></label>
+                            <label for="expiryDate" class="form-label"><i class="iconfont icon-calendar-days"></i> 到期日期 <span id="expiryRequiredMark" style="color: red;">*</span></label>
                             <input type="date" class="form-control" id="expiryDate" required>
-                            <div class="form-text text-info">根据注册时间和续期周期自动计算，可手动调整</div>
+                            <div class="form-text text-info" id="expiryDateHelp">根据注册时间和续期周期自动计算，可手动调整</div>
                         </div>
                         
                         <!-- 价格设置 -->
@@ -5122,6 +5104,7 @@ const getHTMLContent = (title) => `
                 document.getElementById('expiryDate').value = '';
                 document.getElementById('renewCycleValue').value = '1';
                 document.getElementById('renewCycleUnit').value = 'year';
+                updateExpiryDateRequirement();
                 document.getElementById('renewLink').value = '';
                 
                 // 清除高亮样式
@@ -5197,12 +5180,36 @@ const getHTMLContent = (title) => `
                 }, 300); // 增加延迟时间，减少触发频率
             });
             
+            // 永久周期不需要到期日期；普通周期仍要求填写到期日期
+            function updateExpiryDateRequirement() {
+                const isPermanent = document.getElementById('renewCycleUnit').value === 'permanent';
+                const expiryInput = document.getElementById('expiryDate');
+                const requiredMark = document.getElementById('expiryRequiredMark');
+                const helpText = document.getElementById('expiryDateHelp');
+                const cycleValue = document.getElementById('renewCycleValue');
+                cycleValue.disabled = isPermanent;
+                cycleValue.style.display = isPermanent ? 'none' : '';
+                expiryInput.required = !isPermanent;
+                if (requiredMark) requiredMark.style.display = isPermanent ? 'none' : 'inline';
+                if (helpText) {
+                    helpText.textContent = isPermanent ? '永久有效，无需填写到期日期，也不会触发到期提醒' : '根据注册时间和续期周期自动计算，可手动调整';
+                    helpText.className = isPermanent ? 'form-text text-success' : 'form-text text-info';
+                }
+                if (isPermanent) expiryInput.value = '';
+            }
+            document.getElementById('renewCycleUnit').addEventListener('change', updateExpiryDateRequirement);
+
             // 根据注册时间和续期周期自动计算到期日期
             function calculateExpiryDate() {
                 const registrationDate = document.getElementById('registrationDate').value;
                 const lastRenewed = document.getElementById('lastRenewed').value;
                 const renewCycleValue = parseInt(document.getElementById('renewCycleValue').value) || 1;
                 const renewCycleUnit = document.getElementById('renewCycleUnit').value;
+                if (renewCycleUnit === 'permanent') {
+                    document.getElementById('expiryDate').value = '';
+                    updateExpiryDateRequirement();
+                    return;
+                }
                 
                 if (!registrationDate) {
                     // 如果没有注册时间，清空到期日期
@@ -5790,9 +5797,13 @@ const getHTMLContent = (title) => `
             
             // 计算每个域名的剩余天数
             domains.forEach(domain => {
-                const expiryDate = new Date(domain.expiryDate);
-                const today = new Date();
-                domain.daysLeft = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                if (domain.renewCycle && domain.renewCycle.unit === 'permanent') {
+                    domain.daysLeft = Infinity;
+                } else {
+                    const expiryDate = new Date(domain.expiryDate);
+                    const today = new Date();
+                    domain.daysLeft = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                }
             });
             
             // 按照指定字段和顺序排序
@@ -6020,12 +6031,12 @@ const getHTMLContent = (title) => `
                     }
                     
                     // 计算域名有效期的百分比进度
-                    let progressPercent = 0;
+                    let progressPercent = domain.renewCycle && domain.renewCycle.unit === 'permanent' ? 100 : 0;
                     
                     // 获取域名的续期周期设置，如果没有则使用默认值（1年）
                     let cycleDays = 365; // 默认为1年
                     
-                    if (domain.renewCycle) {
+                    if (domain.renewCycle && domain.renewCycle.unit !== 'permanent') {
                         // 根据续期周期单位计算天数
                         switch(domain.renewCycle.unit) {
                             case 'year':
@@ -6053,8 +6064,10 @@ const getHTMLContent = (title) => `
                         }
                     }
                     
-                    // 简化进度条计算逻辑
-                    if (daysLeft <= 0) {
+                    // 简化进度条计算逻辑；永久域名始终显示 100%
+                    if (domain.renewCycle && domain.renewCycle.unit === 'permanent') {
+                        progressPercent = 100;
+                    } else if (daysLeft <= 0) {
                         // 已过期域名，但如果有lastRenewed字段，说明已续期
                         if (domain.lastRenewed) {
                             const today = new Date();
@@ -6245,13 +6258,13 @@ const getHTMLContent = (title) => `
                         (domain.registrar ? '<p class="card-text mb-1" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; display: block;"><i class="iconfont icon-house-chimney"></i><strong>注册厂商:</strong> ' + escapeHtml(domain.registrar) + '</p>' : '') +
                         (domain.registeredAccount ? '<p class="card-text mb-1" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; display: block;"><i class="iconfont icon-user"></i><strong>注册账号:</strong> ' + escapeHtml(domain.registeredAccount) + '</p>' : '') +
                         (domain.registrationDate ? '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-calendar-days"></i><strong>注册时间:</strong>' + formatDate(domain.registrationDate) + '</p>' : '') +
-                        '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-rili"></i><strong>到期日期:</strong>' + formatDate(domain.expiryDate) + '</p>' +
+                        '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-rili"></i><strong>到期日期:</strong>' + (domain.renewCycle && domain.renewCycle.unit === 'permanent' ? '永久' : formatDate(domain.expiryDate)) + '</p>' +
                         '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-repeat"></i><strong>续期周期:</strong>' +
-                        (domain.renewCycle ? escapeHtml(domain.renewCycle.value) + ' ' +
+                        (domain.renewCycle && domain.renewCycle.unit === 'permanent' ? '永久' : (domain.renewCycle ? escapeHtml(domain.renewCycle.value) + ' ' +
                         (domain.renewCycle.unit === 'year' ? '年' :
-                         domain.renewCycle.unit === 'month' ? '月' : '天') : '1 年') +
+                         domain.renewCycle.unit === 'month' ? '月' : '天') : '1 年')) +
                         priceHtml + '</p>' +
-                        '<p class="card-text mb-0 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-hourglass-start"></i><strong>剩余天数:</strong>' + (daysLeft > 0 ? daysLeft + ' 天 <span class="text-muted">(' + formatDaysToYMD(daysLeft) + ')</span>' : '已过期') + '</p>' +
+                        '<p class="card-text mb-0 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-hourglass-start"></i><strong>剩余天数:</strong>' + (domain.renewCycle && domain.renewCycle.unit === 'permanent' ? '永久有效' : (daysLeft > 0 ? daysLeft + ' 天 <span class="text-muted">(' + formatDaysToYMD(daysLeft) + ')</span>' : '已过期')) + '</p>' +
                         (progressStyle === 'bar' ? progressHtml : '') +
                         '</div>' +
                         (progressStyle === 'circle' ? progressHtml : '') +
@@ -6259,7 +6272,7 @@ const getHTMLContent = (title) => `
                         (infoHtml ? '<div class="domain-info mb-2">' + infoHtml + '</div>' : '') +
                         '<div class="domain-actions">' +
                         '<button class="btn btn-sm btn-primary edit-domain" data-id="' + escapeHtml(domain.id) + '" title="编辑域名"><i class="iconfont icon-pencil"></i> 编辑</button>' +
-                        '<button class="btn btn-sm btn-success renew-domain" data-id="' + escapeHtml(domain.id) + '" data-name="' + escapeHtml(domain.name) + '" data-expiry="' + escapeHtml(domain.expiryDate) + '" title="续期域名"><i class="iconfont icon-arrows-rotate"></i> 续期</button>' +
+                        (domain.renewCycle && domain.renewCycle.unit === 'permanent' ? '' : '<button class="btn btn-sm btn-success renew-domain" data-id="' + escapeHtml(domain.id) + '" data-name="' + escapeHtml(domain.name) + '" data-expiry="' + escapeHtml(domain.expiryDate) + '" title="续期域名"><i class="iconfont icon-arrows-rotate"></i> 续期</button>') +
                         renewLinkHtml +
                         '<button class="btn btn-sm btn-danger delete-domain" data-id="' + escapeHtml(domain.id) + '" data-name="' + escapeHtml(domain.name) + '" title="删除域名"><i class="iconfont icon-shanchu"></i> 删除</button>' +
                         '</div>' +
@@ -6449,8 +6462,9 @@ const getHTMLContent = (title) => `
             const notifyEnabled = document.getElementById('notifyEnabled').checked;
             const notifyDays = parseInt(document.getElementById('domainNotifyDays').value) || 30;
             
-            if (!name || !registrationDate || !expiryDate) {
-                showAlert('danger', '域名、注册时间和到期日期为必填项');
+            const isPermanent = renewCycleUnit === 'permanent';
+            if (!name || !registrationDate || (!isPermanent && !expiryDate)) {
+                showAlert('danger', isPermanent ? '域名和注册时间为必填项' : '域名、注册时间和到期日期为必填项');
                 return;
             }
             
@@ -6470,7 +6484,6 @@ const getHTMLContent = (title) => `
             
             const domainData = {
                 name,
-                expiryDate,
                 registrationDate,
                 registrar,
                 registeredAccount,
@@ -6479,7 +6492,8 @@ const getHTMLContent = (title) => `
                 noteColor,
                 renewLink,
                 lastRenewed,
-                renewCycle: {
+                expiryDate: isPermanent ? null : expiryDate,
+                renewCycle: isPermanent ? { value: null, unit: 'permanent' } : {
                     value: renewCycleValue,
                     unit: renewCycleUnit
                 },
@@ -6580,9 +6594,11 @@ const getHTMLContent = (title) => `
                     if (domain.renewCycle) {
                         document.getElementById('renewCycleValue').value = domain.renewCycle.value || 1;
                         document.getElementById('renewCycleUnit').value = domain.renewCycle.unit || 'year';
+                        updateExpiryDateRequirement();
                     } else {
                         document.getElementById('renewCycleValue').value = 1;
                         document.getElementById('renewCycleUnit').value = 'year';
+                        updateExpiryDateRequirement();
                     }
                     
                     // 设置价格
@@ -6628,13 +6644,14 @@ const getHTMLContent = (title) => `
                         document.getElementById('expiryDate').removeAttribute('readonly');
                         const expiryLabel = document.querySelector('label[for="expiryDate"]');
                         if (expiryLabel) {
-                            expiryLabel.innerHTML = '<i class="iconfont icon-calendar-days"></i> 到期日期 <span style="color: red;">*</span>';
+                            expiryLabel.innerHTML = '<i class="iconfont icon-calendar-days"></i> 到期日期 <span id="expiryRequiredMark" style="color: red;">*</span>';
                             const helpText = expiryLabel.nextElementSibling && expiryLabel.nextElementSibling.nextElementSibling;
                             if (helpText) {
                                 helpText.textContent = '根据注册时间和续期周期自动计算，可手动调整';
                                 helpText.className = 'form-text text-info';
                             }
                         }
+                        updateExpiryDateRequirement();
                         updateNotePreview(); // 更新备注预览
                     }, 100);
                 }
@@ -6766,6 +6783,7 @@ const getHTMLContent = (title) => `
                     // 重置续期周期设置
                     document.getElementById('renewCycleValue').value = '1';
                     document.getElementById('renewCycleUnit').value = 'year';
+                    updateExpiryDateRequirement();
                     
                     // 重置价格设置
                     document.getElementById('priceValue').value = '';
@@ -6788,13 +6806,14 @@ const getHTMLContent = (title) => `
                     document.getElementById('expiryDate').removeAttribute('readonly');
                     const expiryLabel = document.querySelector('label[for="expiryDate"]');
                     if (expiryLabel) {
-                        expiryLabel.innerHTML = '<i class="iconfont icon-calendar-days"></i> 到期日期 <span style="color: red;">*</span>';
+                        expiryLabel.innerHTML = '<i class="iconfont icon-calendar-days"></i> 到期日期 <span id="expiryRequiredMark" style="color: red;">*</span>';
                         const helpText = expiryLabel.nextElementSibling && expiryLabel.nextElementSibling.nextElementSibling;
                         if (helpText) {
                             helpText.textContent = '根据注册时间和续期周期自动计算，可手动调整';
                             helpText.className = 'form-text text-info';
                         }
                     }
+                    updateExpiryDateRequirement();
                     
                     // 重置WHOIS查询状态
                     const whoisStatus = document.getElementById('whoisQueryStatus');
@@ -7208,7 +7227,7 @@ const getHTMLContent = (title) => `
                             // 查询成功，填充表单数据
                             const fillResult = fillFormWithWhoisData(result);
                             if (fillResult) {
-                                showWhoisStatus(result.note || '域名信息查询成功，已自动填充相关字段', result.note ? 'warning' : 'success');
+                                showWhoisStatus('域名信息查询成功，已自动填充相关字段', 'success');
                             }
                         } else {
                             // 查询失败
@@ -7256,7 +7275,7 @@ const getHTMLContent = (title) => `
                         registrarName = 'NIC.UA';
                     } else if (domainName.endsWith('.eu.cc')) {
                         registrarName = 'Gname.com';
-                    } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg') || domainName.endsWith('.qd.je')) {
+                    } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg')) {
                         registrarName = 'DigitalPlat.org';
                     } else if (domainName.endsWith('.indevs.in') || domainName.endsWith('.sryze.cc') || domainName.endsWith('.ryzedns.org') || domainName.endsWith('.nx.kg')) {
                         registrarName = 'Stackryze Domains';
@@ -7282,7 +7301,7 @@ const getHTMLContent = (title) => `
                             renewLinkField.value = 'https://www.gname.com/user';
                             renewLinkField.classList.add('auto-filled');
                             filledFields.push('续费链接');
-                        } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg') || domainName.endsWith('.qd.je')) {
+                        } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg')) {
                             renewLinkField.value = 'https://dash.domain.digitalplat.org/panel/main?page=%2Fpanel%2Fdomains';
                             renewLinkField.classList.add('auto-filled');
                             filledFields.push('续费链接');
@@ -7450,8 +7469,8 @@ const getHTMLContent = (title) => `
                                 valueB = (b.customNote || '').toLowerCase();
                                 break;
                             case 'expiryDate':
-                                valueA = new Date(a.expiryDate).getTime();
-                                valueB = new Date(b.expiryDate).getTime();
+                                valueA = a.renewCycle && a.renewCycle.unit === 'permanent' ? Number.MAX_SAFE_INTEGER : new Date(a.expiryDate).getTime();
+                                valueB = b.renewCycle && b.renewCycle.unit === 'permanent' ? Number.MAX_SAFE_INTEGER : new Date(b.expiryDate).getTime();
                                 break;
                             case 'daysLeft':
                                 valueA = a.daysLeft;
@@ -7886,21 +7905,7 @@ async function handleApiRequest(request) {
       }
 
       let result;
-      if (freeProvider === 'manual-cloudns' || freeProvider === 'manual-euorg') {
-        const isCloudns = freeProvider === 'manual-cloudns';
-        result = {
-          success: true,
-          registered: null,
-          domain,
-          provider: isCloudns ? 'ClouDNS（手动录入）' : 'EU.org（手动录入）',
-          registrar: isCloudns ? 'ClouDNS' : 'EU.org',
-          registrationDate: null,
-          expiryDate: null,
-          note: isCloudns
-            ? 'ClouDNS 免费 hostname 没有可供本工具可靠判断注册状态和到期日的公开 RDAP/WHOIS 接口；请以 ClouDNS 控制台为准，手动填写日期。'
-            : 'EU.org 域名申请需人工审核；公开查询不能可靠代表申请可用性或审批状态。请以 EU.org 控制台/邮件为准，手动填写日期。'
-        };
-      } else if (freeProvider === 'pp.ua') {
+      if (freeProvider === 'pp.ua') {
         result = await queryPpUaWhois(domain);
       } else if (freeProvider === 'eu.cc') {
         result = await queryEuCcWhois(domain);
@@ -8036,6 +8041,7 @@ async function getDomains() {
 // 收窄 renewCycle，确保 value 是正数、unit 是受信枚举
 export function sanitizeRenewCycle(renewCycle) {
   if (!renewCycle || typeof renewCycle !== 'object') return null;
+  if (renewCycle.unit === 'permanent') return { value: null, unit: 'permanent' };
   const value = Number(renewCycle.value);
   if (!Number.isFinite(value) || value <= 0 || value > 9999) return null;
   const unit = ['year', 'month', 'day'].includes(renewCycle.unit) ? renewCycle.unit : 'year';
@@ -8065,8 +8071,9 @@ async function addDomain(domainData) {
   const domains = await getDomains();
   
   // 验证域名数据
-  if (!domainData.name || !domainData.registrationDate || !domainData.expiryDate) {
-    throw new Error('域名、注册时间和到期日期为必填项');
+  const isPermanent = domainData.renewCycle && domainData.renewCycle.unit === 'permanent';
+  if (!domainData.name || !domainData.registrationDate || (!isPermanent && !domainData.expiryDate)) {
+    throw new Error(isPermanent ? '域名和注册时间为必填项' : '域名、注册时间和到期日期为必填项');
   }
   
   // 生成唯一ID
@@ -8116,8 +8123,9 @@ async function updateDomain(id, domainData) {
   }
   
   // 验证域名数据
-  if (!domainData.name || !domainData.registrationDate || !domainData.expiryDate) {
-    throw new Error('域名、注册时间和到期日期为必填项');
+  const isPermanent = domainData.renewCycle && domainData.renewCycle.unit === 'permanent';
+  if (!domainData.name || !domainData.registrationDate || (!isPermanent && !domainData.expiryDate)) {
+    throw new Error(isPermanent ? '域名和注册时间为必填项' : '域名、注册时间和到期日期为必填项');
   }
   
   // 确保通知设置正确
@@ -8791,6 +8799,7 @@ async function checkExpiringDomains() {
   
   // 判断域名是否符合过期提醒条件的辅助函数
   function needsExpiryNotify(domain) {
+    if (domain.renewCycle && domain.renewCycle.unit === 'permanent') return false;
     const expiryDate = new Date(domain.expiryDate);
     const daysLeft = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
     const notifySettings = domain.notifySettings || { useGlobalSettings: true, enabled: true, notifyDays: 30 };
@@ -8918,9 +8927,10 @@ async function sendExpiringDomainsNotification(config, domains, isExpired) {
   let message = title + '\n' + separator + '\n\n';
   
   domains.forEach((domain, index) => {
-    const expiryDate = new Date(domain.expiryDate);
+    const isPermanent = domain.renewCycle && domain.renewCycle.unit === 'permanent';
+    const expiryDate = isPermanent ? null : new Date(domain.expiryDate);
     const today = new Date();
-    const daysLeft = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const daysLeft = isPermanent ? null : Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
     if (index > 0) {
       message += '\n' + domainSeparator + '\n\n';
@@ -8934,8 +8944,8 @@ async function sendExpiringDomainsNotification(config, domains, isExpired) {
       message += '👤 <b>注册账号:</b> ' + escapeHtmlBackend(domain.registeredAccount) + '\n';
     }
 
-    message += '⏳ <b>剩余时间:</b> ' + daysLeft + ' 天\n';
-    message += '📅 <b>到期日期:</b> ' + formatDate(domain.expiryDate) + '\n';
+    message += '⏳ <b>剩余时间:</b> ' + (isPermanent ? '永久有效' : daysLeft + ' 天') + '\n';
+    message += '📅 <b>到期日期:</b> ' + (isPermanent ? '永久' : formatDate(domain.expiryDate)) + '\n';
 
     if (domain.renewLink) {
       message += '⚠️ <b>点击续期:</b> ' + escapeHtmlBackend(domain.renewLink) + '\n';
