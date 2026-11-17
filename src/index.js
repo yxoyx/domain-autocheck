@@ -10,7 +10,7 @@ import { connect } from 'cloudflare:sockets';
 // 环境变量声明（运行时由 injectEnv 注入）
 let DOMAIN_MONITOR, TOKEN, SITE_NAME, LOGO_URL,
     BACKGROUND_URL, MOBILE_BACKGROUND_URL,
-    TG_TOKEN, TG_ID, BARK_SERVER, BARK_DEVICE_KEY, BARK_BASIC_AUTH;
+    TG_TOKEN, TG_ID, BARK_SERVER, BARK_DEVICE_KEY, BARK_BASIC_AUTH, DNSHE_API_KEY, DNSHE_API_SECRET;
 
 // 将环境变量注入模块作用域，使已有的 typeof VAR !== 'undefined' 检查继续工作
 function injectEnv(env) {
@@ -25,6 +25,8 @@ function injectEnv(env) {
 	if (env.BARK_SERVER !== undefined) BARK_SERVER = env.BARK_SERVER;
 	if (env.BARK_DEVICE_KEY !== undefined) BARK_DEVICE_KEY = env.BARK_DEVICE_KEY;
 	if (env.BARK_BASIC_AUTH !== undefined) BARK_BASIC_AUTH = env.BARK_BASIC_AUTH;
+	if (env.DNSHE_API_KEY !== undefined) DNSHE_API_KEY = env.DNSHE_API_KEY;
+	if (env.DNSHE_API_SECRET !== undefined) DNSHE_API_SECRET = env.DNSHE_API_SECRET;
 }
 
 // ================================
@@ -423,37 +425,164 @@ export function isMutatingMethod(method) {
   return method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
 }
 
-// 判断域名是否支持WHOIS查询，返回对应的查询函数或null
-function getWhoisQueryFunction(domainName) {
-  const lowerDomain = domainName.toLowerCase();
-  const dotCount = lowerDomain.split('.').length - 1;
+// Public Suffix List：用于区分真正可注册的域名（example.co.uk）与主机子域名（www.example.com）。
+// 仅允许输入 eTLD+1，避免将普通网站子域名误送到注册局 RDAP 并误报为未注册。
+const PUBLIC_SUFFIX_LIST_URL = 'https://publicsuffix.org/list/public_suffix_list.dat';
+const PUBLIC_SUFFIX_KV_KEY = '__SYSTEM__:PUBLIC_SUFFIX_LIST_V1__';
+const PUBLIC_SUFFIX_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+let publicSuffixMemoryRules = null;
+let publicSuffixMemoryAt = 0;
+let publicSuffixFetchInFlight = null;
 
-  // pp.ua 二级域名
-  if (lowerDomain.endsWith('.pp.ua')) {
-    return queryPpUaWhois;
+export function parsePublicSuffixRules(text) {
+  const exact = new Set();
+  const wildcard = new Set();
+  const exception = new Set();
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine.trim().toLowerCase();
+    if (!line || line.startsWith('//')) continue;
+    if (line.startsWith('!')) exception.add(line.slice(1));
+    else if (line.startsWith('*.')) wildcard.add(line.slice(2));
+    else exact.add(line);
   }
-  // eu.cc 二级域名
-  if (lowerDomain.endsWith('.eu.cc')) {
-    return queryEuCcWhois;
+  return { exact: [...exact], wildcard: [...wildcard], exception: [...exception] };
+}
+
+export function getPublicSuffixLength(domain, rules) {
+  const labels = String(domain || '').toLowerCase().replace(/\.$/, '').split('.');
+  if (labels.length < 2 || !rules) return 0;
+  const exact = new Set(rules.exact || []);
+  const wildcard = new Set(rules.wildcard || []);
+  const exception = new Set(rules.exception || []);
+  let ruleLength = 1; // PSL 默认规则：*
+  let exceptionLength = 0;
+
+  for (let i = 0; i < labels.length; i++) {
+    const suffix = labels.slice(i).join('.');
+    if (exception.has(suffix)) exceptionLength = Math.max(exceptionLength, labels.length - i);
+    if (exact.has(suffix)) ruleLength = Math.max(ruleLength, labels.length - i);
+    // wildcard 规则 *.suffix：当前 suffix 前必须还有一个标签。
+    if (i > 0 && wildcard.has(suffix)) ruleLength = Math.max(ruleLength, labels.length - i + 1);
   }
-  // DigitalPlat 二级域名
-  if (lowerDomain.endsWith('.qzz.io') || lowerDomain.endsWith('.dpdns.org') ||
-      lowerDomain.endsWith('.us.kg') || lowerDomain.endsWith('.xx.kg')) {
-    return queryDigitalPlatWhois;
+  return exceptionLength ? exceptionLength - 1 : ruleLength;
+}
+
+async function getPublicSuffixRules() {
+  const now = Date.now();
+  if (publicSuffixMemoryRules && now - publicSuffixMemoryAt < PUBLIC_SUFFIX_CACHE_TTL_MS) return publicSuffixMemoryRules;
+  if (publicSuffixFetchInFlight) return publicSuffixFetchInFlight;
+
+  publicSuffixFetchInFlight = (async () => {
+    let stale = publicSuffixMemoryRules;
+    try {
+      if (typeof DOMAIN_MONITOR !== 'undefined' && DOMAIN_MONITOR) {
+        const cached = await DOMAIN_MONITOR.get(PUBLIC_SUFFIX_KV_KEY, 'json');
+        if (cached && cached.rules && cached.cachedAt && now - cached.cachedAt < PUBLIC_SUFFIX_CACHE_TTL_MS) {
+          publicSuffixMemoryRules = cached.rules;
+          publicSuffixMemoryAt = cached.cachedAt;
+          return cached.rules;
+        }
+        if (cached && cached.rules) stale = cached.rules;
+      }
+    } catch (error) {
+      console.warn('读取 Public Suffix List KV 缓存失败:', error.message || error);
+    }
+
+    try {
+      const response = await fetchWithTimeout(PUBLIC_SUFFIX_LIST_URL, {
+        headers: { 'accept': 'text/plain' }
+      }, 12000);
+      if (!response.ok) throw new Error(`Public Suffix List 请求失败: ${response.status}`);
+      const text = await response.text();
+      if (!text.includes('BEGIN ICANN DOMAINS') || text.length < 10000) throw new Error('Public Suffix List 数据格式无效');
+      const rules = parsePublicSuffixRules(text);
+      const cachedAt = Date.now();
+      publicSuffixMemoryRules = rules;
+      publicSuffixMemoryAt = cachedAt;
+      try {
+        if (typeof DOMAIN_MONITOR !== 'undefined' && DOMAIN_MONITOR) {
+          await DOMAIN_MONITOR.put(PUBLIC_SUFFIX_KV_KEY, JSON.stringify({ rules, cachedAt }), { expirationTtl: 14 * 24 * 60 * 60 });
+        }
+      } catch (error) {
+        console.warn('写入 Public Suffix List KV 缓存失败:', error.message || error);
+      }
+      return rules;
+    } catch (error) {
+      if (stale) {
+        publicSuffixMemoryRules = stale;
+        return stale;
+      }
+      throw error;
+    }
+  })();
+  try { return await publicSuffixFetchInFlight; }
+  finally { publicSuffixFetchInFlight = null; }
+}
+
+async function isRegistrableDomainName(domain) {
+  const labels = String(domain || '').toLowerCase().replace(/\.$/, '').split('.');
+  if (labels.length < 2 || labels.some(label => !label || label.length > 63 || label.startsWith('-') || label.endsWith('-'))) return false;
+  try {
+    const rules = await getPublicSuffixRules();
+    const suffixLength = getPublicSuffixLength(domain, rules);
+    return suffixLength > 0 && labels.length === suffixLength + 1;
+  } catch (error) {
+    // PSL 服务不可用且无缓存时，退回保守规则：仅接受两标签域名；多级注册后缀不猜测。
+    console.warn('Public Suffix List 暂不可用，采用保守域名验证:', error.message || error);
+    return labels.length === 2;
   }
-  // Stackryze 二级域名
-  if (lowerDomain.endsWith('.indevs.in') || lowerDomain.endsWith('.sryze.cc') ||
-      lowerDomain.endsWith('.ryzedns.org') || lowerDomain.endsWith('.nx.kg')) {
-    return queryStackryzeWhois;
-  }
-  // 一级域名：RDAP 查询（免费无 Key），所有 gTLD 均可查
-  if (dotCount === 1) {
-    return queryFirstLevelDomain;
+}
+
+// 支持通过权威注册局 RDAP 查询的一级域名，以及有公开可靠 WHOIS/RDAP 接口的免费二级域名。
+// 免费二级域名仅接入有明确查询端点和到期字段的服务商，不把普通托管子域名误当成可查询注册域名。
+const FREE_SUBDOMAIN_SUFFIXES = [
+  { suffix: 'pp.ua', provider: 'pp.ua' },
+  { suffix: 'eu.cc', provider: 'eu.cc' },
+  { suffix: 'qzz.io', provider: 'digitalplat' },
+  { suffix: 'dpdns.org', provider: 'digitalplat' },
+  { suffix: 'us.kg', provider: 'digitalplat' },
+  { suffix: 'xx.kg', provider: 'digitalplat' },
+  { suffix: 'indevs.in', provider: 'stackryze' },
+  { suffix: 'sryze.cc', provider: 'stackryze' },
+  { suffix: 'ryzedns.org', provider: 'stackryze' },
+  { suffix: 'nx.kg', provider: 'stackryze' },
+  // DNSHE 官方公开 WHOIS API 支持的免费后缀
+  { suffix: 'de5.net', provider: 'dnshe' },
+  { suffix: 'us.ci', provider: 'dnshe' },
+  { suffix: 'cc.cd', provider: 'dnshe' },
+  { suffix: 'bot.cd', provider: 'dnshe' },
+  { suffix: 'ccwu.cc', provider: 'dnshe' },
+];
+
+export function getFreeSubdomainProvider(domainName) {
+  const lower = String(domainName || '').toLowerCase().replace(/\.$/, '');
+  for (const item of FREE_SUBDOMAIN_SUFFIXES) {
+    const suffix = `.${item.suffix}`;
+    if (lower.endsWith(suffix)) {
+      const prefix = lower.slice(0, -suffix.length);
+      // 仅接受恰好一个注册前缀标签，拒绝把更深层主机名误判为注册对象。
+      if (prefix && !prefix.includes('.')) return item.provider;
+    }
   }
   return null;
 }
 
-// 一级域名查询：注册局 RDAP（若有覆盖）> TCP WHOIS（IANA 两跳）> rdap.org 兜底
+// 判断域名是否支持 WHOIS/RDAP 查询，返回对应查询函数或 null。
+async function getWhoisQueryFunction(domainName) {
+  const lowerDomain = String(domainName || '').toLowerCase();
+  const provider = getFreeSubdomainProvider(lowerDomain);
+  if (provider === 'pp.ua') return queryPpUaWhois;
+  if (provider === 'eu.cc') return queryEuCcWhois;
+  if (provider === 'digitalplat') return queryDigitalPlatWhois;
+  if (provider === 'stackryze') return queryStackryzeWhois;
+  if (provider === 'dnshe') return queryDnsheWhois;
+
+  // 一级域名：通过 IANA RDAP Bootstrap 自动发现任意已登记 TLD 的权威 RDAP 服务。
+  if (await isRegistrableDomainName(lowerDomain)) return queryFirstLevelDomain;
+  return null;
+}
+
+// 一级域名查询：已知注册局 RDAP > IANA 官方 Bootstrap RDAP > TCP WHOIS > rdap.org 兜底
 //
 // 背景：rdap.org（IETF bootstrap）对 Cloudflare Workers 出口会阻断/限速；部分 ccTLD
 // 的 43 端口 WHOIS（如 whois.ua）也封 Workers。但这些注册局往往有自己的 HTTPS RDAP
@@ -463,19 +592,30 @@ async function queryFirstLevelDomain(domain) {
   const lower = domain.toLowerCase();
   const tld = lower.split('.').pop();
 
-  // 1) 已知注册局 RDAP（完整域名 > TLD），直连，绕开会被封的 WHOIS/bootstrap
-  const rdapBase = RDAP_SERVER_OVERRIDE[lower] || RDAP_SERVER_OVERRIDE[tld];
-  if (rdapBase) {
-    const r = await queryGenericRdap(domain, rdapBase);
-    if (r.success) return r;
+  // 1) 已验证的注册局 RDAP 覆盖项（如 Cloudflare Workers 出口对某些 RDAP 主机有特殊可达性问题）。
+  const override = RDAP_SERVER_OVERRIDE[lower] || RDAP_SERVER_OVERRIDE[tld];
+  if (override) {
+    const result = await queryGenericRdap(domain, override);
+    if (result.success) return result;
   }
 
-  // 2) TCP WHOIS（IANA 两跳）
+  // 2) IANA 官方 RDAP Bootstrap：动态查找任意已发布 TLD 的权威 RDAP 服务器。
+  const ianaResult = await queryIanaBootstrapRdap(domain);
+  if (ianaResult.success) return ianaResult;
+
+  // 3) 保留原 TCP WHOIS 兼容路径；部分 ccTLD 尚未提供 RDAP。
   const tcpResult = await queryGenericTcpWhois(domain);
   if (tcpResult.success) return tcpResult;
 
-  // 3) rdap.org bootstrap 兜底
-  return await queryGenericRdap(domain);
+  // 4) 最后兼容旧版 rdap.org 重定向入口。
+  const fallback = await queryGenericRdap(domain);
+  if (fallback.success) return fallback;
+
+  return {
+    success: false,
+    domain,
+    error: [ianaResult.error, tcpResult.error, fallback.error].filter(Boolean).join('；') || '未找到可用的 RDAP/WHOIS 查询通道'
+  };
 }
 
 // 把 cloudflare:sockets 的底层错误转成可读说明。
@@ -731,6 +871,115 @@ async function queryGenericTcpWhois(domain) {
   }
 }
 
+// IANA RDAP DNS bootstrap（RFC 9224）。
+// 缓存 24 小时：优先 KV（独立系统键，不触碰原域名数据），再使用 Worker isolate 内存缓存。
+const IANA_RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
+const IANA_RDAP_KV_KEY = '__SYSTEM__:IANA_RDAP_DNS_BOOTSTRAP_V1__';
+const IANA_RDAP_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+let ianaRdapMemoryCache = null;
+let ianaRdapMemoryCacheAt = 0;
+let ianaRdapFetchInFlight = null;
+
+async function getIanaRdapBootstrap() {
+  const now = Date.now();
+  if (ianaRdapMemoryCache && now - ianaRdapMemoryCacheAt < IANA_RDAP_CACHE_TTL_MS) {
+    return ianaRdapMemoryCache;
+  }
+  if (ianaRdapFetchInFlight) return ianaRdapFetchInFlight;
+
+  ianaRdapFetchInFlight = (async () => {
+    let stale = ianaRdapMemoryCache;
+    // KV cache: read failure must not block the live IANA lookup.
+    try {
+      if (typeof DOMAIN_MONITOR !== 'undefined' && DOMAIN_MONITOR) {
+        const cached = await DOMAIN_MONITOR.get(IANA_RDAP_KV_KEY, 'json');
+        if (cached && Array.isArray(cached.services) && cached.cachedAt && now - cached.cachedAt < IANA_RDAP_CACHE_TTL_MS) {
+          ianaRdapMemoryCache = cached;
+          ianaRdapMemoryCacheAt = cached.cachedAt;
+          return cached;
+        }
+        if (cached && Array.isArray(cached.services)) stale = cached;
+      }
+    } catch (error) {
+      console.warn('读取 IANA RDAP KV 缓存失败:', error.message || error);
+    }
+
+    try {
+      const response = await fetchWithTimeout(IANA_RDAP_BOOTSTRAP_URL, {
+        headers: { 'accept': 'application/json' }
+      }, 12000);
+      if (!response.ok) throw new Error(`IANA Bootstrap 请求失败: ${response.status}`);
+      const data = await response.json();
+      if (!data || !Array.isArray(data.services)) throw new Error('IANA Bootstrap 数据格式无效');
+      const cached = { ...data, cachedAt: Date.now() };
+      ianaRdapMemoryCache = cached;
+      ianaRdapMemoryCacheAt = cached.cachedAt;
+      try {
+        if (typeof DOMAIN_MONITOR !== 'undefined' && DOMAIN_MONITOR) {
+          await DOMAIN_MONITOR.put(IANA_RDAP_KV_KEY, JSON.stringify(cached), { expirationTtl: 7 * 24 * 60 * 60 });
+        }
+      } catch (error) {
+        console.warn('写入 IANA RDAP KV 缓存失败:', error.message || error);
+      }
+      return cached;
+    } catch (error) {
+      // IANA 暂时不可用时允许使用上一次缓存，但不将错误缓存成空表。
+      if (stale && Array.isArray(stale.services)) {
+        ianaRdapMemoryCache = stale;
+        ianaRdapMemoryCacheAt = stale.cachedAt || 0;
+        return stale;
+      }
+      throw error;
+    }
+  })();
+
+  try {
+    return await ianaRdapFetchInFlight;
+  } finally {
+    ianaRdapFetchInFlight = null;
+  }
+}
+
+async function resolveIanaRdapBase(domain) {
+  const bootstrap = await getIanaRdapBootstrap();
+  const labels = String(domain).toLowerCase().replace(/\.$/, '').split('.').reverse();
+  let best = null;
+  let bestLength = 0;
+
+  for (const service of bootstrap.services) {
+    if (!Array.isArray(service) || service.length < 2 || !Array.isArray(service[0]) || !Array.isArray(service[1])) continue;
+    const suffixes = service[0];
+    const matched = suffixes.some((suffix) => {
+      const parts = String(suffix).toLowerCase().split('.').reverse();
+      if (parts.length <= bestLength || parts.length > labels.length) return false;
+      return parts.every((part, index) => labels[index] === part);
+    });
+    if (matched) {
+      for (const suffix of suffixes) {
+        const parts = String(suffix).toLowerCase().split('.').reverse();
+        if (parts.length > bestLength && parts.length <= labels.length && parts.every((part, index) => labels[index] === part)) {
+          const https = service[1].find((url) => typeof url === 'string' && url.startsWith('https://'));
+          if (https) {
+            best = https.replace(/\/+$/, '');
+            bestLength = parts.length;
+          }
+        }
+      }
+    }
+  }
+  return best;
+}
+
+async function queryIanaBootstrapRdap(domain) {
+  try {
+    const base = await resolveIanaRdapBase(domain);
+    if (!base) return { success: false, domain, error: `IANA Bootstrap 中没有找到 .${domain.split('.').pop()} 的 RDAP 服务` };
+    return await queryGenericRdap(domain, base);
+  } catch (error) {
+    return { success: false, domain, error: `IANA RDAP Bootstrap 查询失败: ${error.message || error}` };
+  }
+}
+
 // 通用 RDAP 查询：默认走 rdap.org（bootstrap），也可传入指定注册局 RDAP base
 // （如 https://rdap.hostmaster.ua）直连。
 //
@@ -769,12 +1018,15 @@ async function queryGenericRdap(domain, rdapBase) {
     }
 
     if (response.status === 404) {
-      return {
-        success: true,
-        domain: domain,
-        registered: false,
-        raw: null
-      };
+      // 只有标准 RDAP JSON 404 才能判定未注册；HTML/WAF/反向代理 404 必须作为查询失败处理。
+      let errorData = null;
+      try { errorData = await response.clone().json(); } catch (_) {}
+      const isRdap404 = errorData && (Number(errorData.errorCode) === 404 || errorData.objectClassName === 'error');
+      const contentType = response.headers.get('content-type') || '';
+      if (isRdap404) {
+        return { success: true, domain, registered: false, raw: errorData };
+      }
+      throw new Error(`RDAP返回非标准404响应（${contentType || '未知内容类型'}）`);
     }
 
     if (!response.ok) {
@@ -782,9 +1034,12 @@ async function queryGenericRdap(domain, rdapBase) {
     }
 
     const data = await response.json();
+    if (!data || (data.objectClassName !== 'domain' && !data.ldhName)) {
+      throw new Error('RDAP响应不是有效的 domain 对象');
+    }
 
-    // 未注册域名 rdap.org 返回 404（上面已处理）；能走到这里且是 domain 对象即已注册
-    const isRegistered = data.objectClassName === 'domain' || !!data.ldhName;
+    // 能取得标准 domain 对象即为已注册
+    const isRegistered = true;
 
     const getEvent = (action) => {
       const event = (data.events || []).find(e => e.eventAction === action);
@@ -1374,6 +1629,95 @@ async function queryDigitalPlatHttpWhois(domain) {
 
 
 
+// DNSHE 免费二级域名查询：使用官方公开 WHOIS JSON API。
+// 官方文档：endpoint=whois、domain=完整域名；公开模式无需凭据，默认 2 次/分钟/IP。
+// 如配置 DNSHE_API_KEY + DNSHE_API_SECRET，则改用认证请求（官方默认 60 次/分钟）。
+const DNSHE_WHOIS_CACHE_PREFIX = '__WHOIS_DNSHE_V1__:';
+const DNSHE_WHOIS_CACHE_TTL_SECONDS = 6 * 60 * 60;
+
+async function queryDnsheWhois(domain) {
+  const normalized = String(domain).toLowerCase();
+  const cacheKey = `${DNSHE_WHOIS_CACHE_PREFIX}${normalized}`;
+
+  // 减少公开 WHOIS API 的调用频率，避免触发 2 次/分钟/IP 的限制。
+  try {
+    if (typeof DOMAIN_MONITOR !== 'undefined' && DOMAIN_MONITOR) {
+      const cached = await DOMAIN_MONITOR.get(cacheKey, 'json');
+      if (cached && cached.success === true && cached.domain === normalized && cached.cachedAt &&
+          Date.now() - cached.cachedAt < DNSHE_WHOIS_CACHE_TTL_SECONDS * 1000) {
+        return cached.result;
+      }
+    }
+  } catch (error) {
+    console.warn('读取 DNSHE WHOIS 缓存失败:', error.message || error);
+  }
+
+  try {
+    const url = new URL('https://api005.dnshe.com/index.php');
+    url.searchParams.set('m', 'domain_hub');
+    url.searchParams.set('endpoint', 'whois');
+    url.searchParams.set('domain', normalized);
+    const headers = { 'accept': 'application/json', 'user-agent': 'Domain-AutoCheck/2.0' };
+    if (typeof DNSHE_API_KEY !== 'undefined' && DNSHE_API_KEY &&
+        typeof DNSHE_API_SECRET !== 'undefined' && DNSHE_API_SECRET) {
+      headers['X-API-Key'] = DNSHE_API_KEY;
+      headers['X-API-Secret'] = DNSHE_API_SECRET;
+    }
+    const response = await fetchWithTimeout(url.toString(), { method: 'GET', headers }, 15000);
+    let data;
+    try { data = await response.json(); }
+    catch (_) { throw new Error(`DNSHE WHOIS 返回非 JSON 响应（HTTP ${response.status}）`); }
+
+    if (!response.ok || data?.success === false) {
+      const code = data?.error_code || response.status;
+      const message = data?.message || data?.error || response.statusText || '未知错误';
+      throw new Error(`DNSHE WHOIS 查询失败: ${code} ${message}`);
+    }
+
+    const status = String(data.status || '').toLowerCase();
+    const explicitlyUnregistered = data.registered === false || status === 'unregistered';
+    const explicitlyRegistered = data.registered === true || [
+      'registered', 'renewalgraceperiod', 'redemptionperiod', 'serverhold', 'pendingdelete'
+    ].includes(status);
+    if (!explicitlyUnregistered && !explicitlyRegistered) {
+      throw new Error('DNSHE WHOIS 响应缺少明确的注册状态，拒绝猜测');
+    }
+
+    const registrationRaw = data.registered_at || data.registration_date || data.created_at || null;
+    const expiryRaw = data.expires_at || data.expiration_date || null;
+    const expiryYear = expiryRaw ? new Date(expiryRaw).getFullYear() : null;
+    const result = {
+      success: true,
+      domain: data.domain || normalized,
+      registered: explicitlyRegistered,
+      registrationDate: registrationRaw && Number.isFinite(Date.parse(registrationRaw)) ? formatDate(registrationRaw) : null,
+      expiryDate: expiryRaw && Number.isFinite(Date.parse(expiryRaw)) && expiryYear < 2999 ? formatDate(expiryRaw) : null,
+      lastUpdated: data.updated_at && Number.isFinite(Date.parse(data.updated_at)) ? formatDate(data.updated_at) : null,
+      registrar: 'DNSHE',
+      registrarUrl: 'https://www.dnshe.com/',
+      nameservers: Array.isArray(data.nameservers) ? data.nameservers : [],
+      status: data.status ? [String(data.status)] : [],
+      dnssec: null,
+      raw: data
+    };
+
+    try {
+      if (typeof DOMAIN_MONITOR !== 'undefined' && DOMAIN_MONITOR) {
+        await DOMAIN_MONITOR.put(cacheKey, JSON.stringify({
+          success: true, domain: normalized, cachedAt: Date.now(), result
+        }), { expirationTtl: DNSHE_WHOIS_CACHE_TTL_SECONDS });
+      }
+    } catch (error) {
+      console.warn('写入 DNSHE WHOIS 缓存失败:', error.message || error);
+    }
+    return result;
+  } catch (error) {
+    console.error('DNSHE WHOIS 查询失败:', error.message || error);
+    return { success: false, domain: normalized, error: error.message || String(error) };
+  }
+}
+
+
 // Stackryze 域名查询函数 (用于 indevs.in, sryze.cc, ryzedns.org, nx.kg)
 // API: GET https://api-domains.stackryze.com/subdomains/whois?query={domain}
 // 无需 API Key；限流约 100 次 / 15 分钟
@@ -1500,18 +1844,22 @@ async function runWhoisProbeMethod(id, name, description, queryFn, timeoutMs = W
 
 async function probeDomainWhoisChannels(domain) {
   const lowerDomain = domain.toLowerCase();
-  const dotCount = lowerDomain.split('.').length - 1;
-  const isPpUa = lowerDomain.endsWith('.pp.ua');
-  const isEuCc = lowerDomain.endsWith('.eu.cc');
-  const isDigitalPlat = lowerDomain.endsWith('.qzz.io') || lowerDomain.endsWith('.dpdns.org') ||
-    lowerDomain.endsWith('.us.kg') || lowerDomain.endsWith('.xx.kg');
-  const isStackryze = lowerDomain.endsWith('.indevs.in') || lowerDomain.endsWith('.sryze.cc') ||
-    lowerDomain.endsWith('.ryzedns.org') || lowerDomain.endsWith('.nx.kg');
+  const freeProvider = getFreeSubdomainProvider(lowerDomain);
 
   let provider = 'unsupported';
   let methods = [];
 
-  if (isDigitalPlat) {
+  if (freeProvider === 'dnshe') {
+    provider = 'dnshe';
+    methods = await Promise.all([
+      runWhoisProbeMethod(
+        'dnshe-whois',
+        'DNSHE 官方 WHOIS API',
+        `https://api005.dnshe.com/index.php?m=domain_hub&endpoint=whois&domain=${lowerDomain}`,
+        () => queryDnsheWhois(domain)
+      )
+    ]);
+  } else if (freeProvider === 'digitalplat') {
     provider = 'digitalplat';
     methods = await Promise.all([
       runWhoisProbeMethod(
@@ -1533,7 +1881,7 @@ async function probeDomainWhoisChannels(domain) {
         () => queryDigitalPlatHttpWhois(domain)
       )
     ]);
-  } else if (isStackryze) {
+  } else if (freeProvider === 'stackryze') {
     provider = 'stackryze';
     methods = await Promise.all([
       runWhoisProbeMethod(
@@ -1543,7 +1891,7 @@ async function probeDomainWhoisChannels(domain) {
         () => queryStackryzeWhois(domain)
       )
     ]);
-  } else if (isPpUa) {
+  } else if (freeProvider === 'pp.ua') {
     provider = 'pp.ua';
     methods = await Promise.all([
       runWhoisProbeMethod(
@@ -1553,7 +1901,7 @@ async function probeDomainWhoisChannels(domain) {
         () => queryPpUaWhois(domain)
       )
     ]);
-  } else if (isEuCc) {
+  } else if (freeProvider === 'eu.cc') {
     provider = 'eu.cc';
     methods = await Promise.all([
       runWhoisProbeMethod(
@@ -1569,7 +1917,7 @@ async function probeDomainWhoisChannels(domain) {
         () => queryEuCcTcpWhois(domain)
       )
     ]);
-  } else if (dotCount === 1) {
+  } else if (await isRegistrableDomainName(lowerDomain)) {
     provider = 'first-level';
     const tld = lowerDomain.split('.').pop();
     const rdapBase = RDAP_SERVER_OVERRIDE[lowerDomain] || RDAP_SERVER_OVERRIDE[tld] || null;
@@ -1577,9 +1925,16 @@ async function probeDomainWhoisChannels(domain) {
     if (rdapBase) {
       jobs.push(runWhoisProbeMethod(
         'registry-rdap',
-        '注册局 RDAP',
+        '注册局 RDAP（已知入口）',
         `${rdapBase}/domain/${lowerDomain}`,
         () => queryGenericRdap(domain, rdapBase)
+      ));
+    } else {
+      jobs.push(runWhoisProbeMethod(
+        'iana-rdap',
+        'IANA Bootstrap → 权威 RDAP',
+        `https://data.iana.org/rdap/dns.json → ${lowerDomain}`,
+        () => queryIanaBootstrapRdap(domain)
       ));
     }
     // 一级域名 TCP 为 IANA 两跳，每跳读超时 15s + 建连；单独放宽硬超时，避免 25s 误杀
@@ -1603,7 +1958,7 @@ async function probeDomainWhoisChannels(domain) {
       success: false,
       domain: domain,
       provider,
-      error: '不支持的域名类型（仅支持一级域名及已接入的二级域名）',
+      error: '不支持的域名类型（支持一级域名及已接入可靠查询接口的免费二级域名）',
       methods: []
     };
   }
@@ -2152,8 +2507,8 @@ const getWhoisApiHTML = (title) => `
             <ul class="hint-list mt-3">
                 <li>DigitalPlat：RDAP、TCP WHOIS、HTTP WHOIS API</li>
                 <li>Stackryze：HTTP WHOIS API</li>
-                <li>一级域名：优先直连注册局 RDAP（如 Verisign），再 TCP WHOIS，最后 rdap.org 兜底</li>
-                <li>pp.ua / eu.cc：按其实际接入通道探测</li>
+                <li>一级域名：优先直连已知注册局 RDAP，再通过 IANA Bootstrap 自动发现权威 RDAP，最后 TCP WHOIS / rdap.org 兜底</li>
+                <li>免费二级域名：按 PP.UA、Gname、DigitalPlat、Stackryze、DNSHE 的官方查询接口探测</li>
             </ul>
         </div>
 
@@ -2192,6 +2547,7 @@ const getWhoisApiHTML = (title) => `
             const providerLabels = {
                 digitalplat: 'DigitalPlat',
                 stackryze: 'Stackryze',
+                dnshe: 'DNSHE 免费域名',
                 'pp.ua': 'pp.ua',
                 'eu.cc': 'eu.cc',
                 'first-level': '一级域名',
@@ -2317,7 +2673,7 @@ const getWhoisApiHTML = (title) => `
                     return;
                 }
 
-                const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*\\.[a-zA-Z]{2,}$/;
+                const domainRegex = /^[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)+$/;
                 if (!domainRegex.test(domain)) {
                     lastProbe = { success: false, domain, error: '域名格式不正确', methods: [] };
                     renderProbe(lastProbe);
@@ -4713,26 +5069,15 @@ const getHTMLContent = (title) => `
                 // 验证域名格式 - 更宽松的域名格式验证
                 // ⚠️ 此正则 inline 在反引号 HTML 模板里，所有 regex 中的 \X 必须写成 \\X
                 // （JS template literal 会吃掉单个反斜杠，导致 \. 变成 . 让正则失效）
-                const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)*\\.[a-zA-Z]{2,}$/;
+                const domainRegex = /^[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9\\-]{0,61}[a-zA-Z0-9])?)+$/;
                 if (!domainRegex.test(domain)) {
                     showWhoisStatus('域名格式不正确', 'danger');
                     return;
                 }
                 
-                // 验证是否为一级域名（只能有一个点），pp.ua/eu.cc/DigitalPlat/Stackryze 特定域名除外（允许二级域名）
-                const dotCount = domain.split('.').length - 1;
-                const lowerDomain = domain.toLowerCase();
-                const isPpUa = lowerDomain.endsWith('.pp.ua');
-                const isEuCc = lowerDomain.endsWith('.eu.cc');
-                const isDigitalPlat = lowerDomain.endsWith('.qzz.io') || lowerDomain.endsWith('.dpdns.org') || lowerDomain.endsWith('.us.kg') || lowerDomain.endsWith('.xx.kg');
-                const isStackryze = lowerDomain.endsWith('.indevs.in') || lowerDomain.endsWith('.sryze.cc') || lowerDomain.endsWith('.ryzedns.org') || lowerDomain.endsWith('.nx.kg');
-
-                if (dotCount !== 1 && !((isPpUa || isEuCc || isDigitalPlat || isStackryze) && dotCount === 2)) {
-                    if (dotCount === 0) {
-                        showWhoisStatus('请输入完整的域名（如：example.com）', 'danger');
-                    } else {
-                        showWhoisStatus('只能查询一级域名，不支持二级域名查询（检测到' + dotCount + '个点）', 'danger');
-                    }
+                // 多级注册后缀（如 example.co.uk）由后端 Public Suffix List 判断；前端只检查完整域名格式。
+                if (domain.split('.').length < 2) {
+                    showWhoisStatus('请输入完整的域名（如：example.com 或 example.co.uk）', 'danger');
                     return;
                 }
                 
@@ -7512,40 +7857,30 @@ async function handleApiRequest(request) {
         return jsonResponse({ error: '域名格式不正确' }, 400);
       }
       
-      // 验证是否为一级域名（只能有一个点），pp.ua/eu.cc/DigitalPlat/Stackryze 特定域名除外
-      const dotCount = domain.split('.').length - 1;
       const lowerDomain = domain.toLowerCase();
-      const isPpUa = lowerDomain.endsWith('.pp.ua');
-      const isEuCc = lowerDomain.endsWith('.eu.cc');
-      const isDigitalPlat = lowerDomain.endsWith('.qzz.io') || lowerDomain.endsWith('.dpdns.org') || lowerDomain.endsWith('.us.kg') || lowerDomain.endsWith('.xx.kg');
-      const isStackryze = lowerDomain.endsWith('.indevs.in') || lowerDomain.endsWith('.sryze.cc') || lowerDomain.endsWith('.ryzedns.org') || lowerDomain.endsWith('.nx.kg');
-
-      if (dotCount !== 1 && !((isPpUa || isEuCc || isDigitalPlat || isStackryze) && dotCount === 2)) {
-        if (dotCount === 0) {
-          return jsonResponse({ error: '请输入完整的域名（如：example.com）' }, 400);
-        } else {
-          return jsonResponse({ error: '只能查询一级域名，不支持二级域名查询' }, 400);
-        }
+      const freeProvider = getFreeSubdomainProvider(lowerDomain);
+      if (!freeProvider && !(await isRegistrableDomainName(lowerDomain))) {
+        return jsonResponse({
+          error: '该名称不是可注册域名或没有可靠查询接口。普通域名请输入注册域名本身（例如 example.co.uk），不要输入 www.example.com 这样的主机子域名。',
+          success: false
+        }, 400);
       }
-      
+
       let result;
-      if (isPpUa) {
-        // 使用专门的 nic.ua 接口查询 pp.ua 域名
+      if (freeProvider === 'pp.ua') {
         result = await queryPpUaWhois(domain);
-      } else if (isEuCc) {
-        // 使用 gname.com WHOIS 查询 eu.cc 域名
+      } else if (freeProvider === 'eu.cc') {
         result = await queryEuCcWhois(domain);
-      } else if (isDigitalPlat) {
-        // 使用 DigitalPlat 接口查询特定二级域名
+      } else if (freeProvider === 'digitalplat') {
         result = await queryDigitalPlatWhois(domain);
-      } else if (isStackryze) {
-        // 使用 Stackryze 接口查询特定二级域名
+      } else if (freeProvider === 'stackryze') {
         result = await queryStackryzeWhois(domain);
+      } else if (freeProvider === 'dnshe') {
+        result = await queryDnsheWhois(domain);
       } else {
-        // 一级域名：RDAP 查询（免费无 Key）
         result = await queryFirstLevelDomain(domain);
       }
-      
+
       return jsonResponse(result);
     } catch (error) {
       return jsonResponse({ error: 'WHOIS查询失败: ' + error.message }, 400);
@@ -8440,7 +8775,7 @@ async function checkExpiringDomains() {
   let kvNeedUpdate = false;
   
   for (const domain of domainsToCheck) {
-    const whoisFn = getWhoisQueryFunction(domain.name);
+    const whoisFn = await getWhoisQueryFunction(domain.name);
     let currentExpiryDate = domain.expiryDate;
     let dateChanged = false;
     let oldExpiryDate = null;
