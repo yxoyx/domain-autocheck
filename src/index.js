@@ -538,6 +538,8 @@ async function isRegistrableDomainName(domain) {
 const FREE_SUBDOMAIN_SUFFIXES = [
   { suffix: 'pp.ua', provider: 'pp.ua' },
   { suffix: 'eu.cc', provider: 'eu.cc' },
+  // EU.org 免费二级域名：没有可依赖的公开 RDAP/WHOIS 到期数据，识别后采用手动管理。
+  { suffix: 'eu.org', provider: 'manual-euorg' },
   { suffix: 'qzz.io', provider: 'digitalplat' },
   { suffix: 'dpdns.org', provider: 'digitalplat' },
   { suffix: 'us.kg', provider: 'digitalplat' },
@@ -573,6 +575,7 @@ async function getWhoisQueryFunction(domainName) {
   const provider = getFreeSubdomainProvider(lowerDomain);
   if (provider === 'pp.ua') return queryPpUaWhois;
   if (provider === 'eu.cc') return queryEuCcWhois;
+  if (provider === 'manual-euorg') return null;
   if (provider === 'digitalplat') return queryDigitalPlatWhois;
   if (provider === 'stackryze') return queryStackryzeWhois;
   if (provider === 'dnshe') return queryDnsheWhois;
@@ -1913,10 +1916,20 @@ async function probeDomainWhoisChannels(domain) {
       runWhoisProbeMethod(
         'tcp',
         'TCP WHOIS',
-        'whois -h whois.gname.com "' + lowerDomain + '"',
+        'whois -h whois.gname.com \"' + lowerDomain + '\"',
         () => queryEuCcTcpWhois(domain)
       )
     ]);
+  } else if (freeProvider === 'manual-euorg') {
+    provider = 'manual-euorg';
+    methods = [{
+      id: 'manual',
+      name: 'EU.org 手动管理',
+      description: 'EU.org 免费二级域名目前没有可依赖的公开 RDAP/WHOIS 查询接口；请手动填写到期信息。',
+      ok: false,
+      durationMs: 0,
+      result: { success: false, error: 'EU.org 域名可识别，但注册时间和到期时间需要手动维护。' }
+    }];
   } else if (await isRegistrableDomainName(lowerDomain)) {
     provider = 'first-level';
     const tld = lowerDomain.split('.').pop();
@@ -2550,6 +2563,7 @@ const getWhoisApiHTML = (title) => `
                 dnshe: 'DNSHE 免费域名',
                 'pp.ua': 'pp.ua',
                 'eu.cc': 'eu.cc',
+                'manual-euorg': 'EU.org（手动管理）',
                 'first-level': '一级域名',
                 unsupported: '不支持'
             };
@@ -4528,9 +4542,9 @@ const getHTMLContent = (title) => `
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label for="registrationDate" class="form-label"><i class="iconfont icon-calendar-days"></i> 注册时间 <span style="color: red;">*</span></label>
-                            <input type="date" class="form-control" id="registrationDate" required>
-                            <div class="form-text">域名首次注册的时间</div>
+                            <label for="registrationDate" class="form-label"><i class="iconfont icon-calendar-days"></i> 注册时间</label>
+                            <input type="date" class="form-control" id="registrationDate">
+                            <div class="form-text">可选；免费域名查询不到注册时间时可以留空</div>
                         </div>
                         
                         <!-- 续期周期设置 -->
@@ -6480,8 +6494,8 @@ const getHTMLContent = (title) => `
             const notifyDays = parseInt(document.getElementById('domainNotifyDays').value) || 30;
             
             const isPermanent = renewCycleUnit === 'permanent';
-            if (!name || !registrationDate || (!isPermanent && !expiryDate)) {
-                showAlert('danger', isPermanent ? '域名和注册时间为必填项' : '域名、注册时间和到期日期为必填项');
+            if (!name || (!isPermanent && !expiryDate)) {
+                showAlert('danger', isPermanent ? '请填写域名' : '请填写域名和到期日期');
                 return;
             }
             
@@ -6501,7 +6515,7 @@ const getHTMLContent = (title) => `
             
             const domainData = {
                 name,
-                registrationDate,
+                registrationDate: registrationDate || null,
                 registrar,
                 registeredAccount,
                 categoryId,
@@ -7294,7 +7308,9 @@ const getHTMLContent = (title) => `
                     // 填充注册商
                     let registrarName = whoisData.registrar;
                     // 针对特定域名强制设置注册商名称
-                    if (domainName.endsWith('.pp.ua')) {
+                    if (domainName.endsWith('.eu.org')) {
+                        registrarName = 'EU.org';
+                    } else if (domainName.endsWith('.pp.ua')) {
                         registrarName = 'NIC.UA';
                     } else if (domainName.endsWith('.eu.cc')) {
                         registrarName = 'Gname.com';
@@ -7928,7 +7944,15 @@ async function handleApiRequest(request) {
       }
 
       let result;
-      if (freeProvider === 'pp.ua') {
+      if (freeProvider === 'manual-euorg') {
+        result = {
+          success: true,
+          registrar: 'EU.org',
+          registrationDate: null,
+          expiryDate: null,
+          note: 'EU.org 暂无可依赖的公开 RDAP/WHOIS 日期数据，请手动填写可确认的信息。'
+        };
+      } else if (freeProvider === 'pp.ua') {
         result = await queryPpUaWhois(domain);
       } else if (freeProvider === 'eu.cc') {
         result = await queryEuCcWhois(domain);
@@ -8095,11 +8119,12 @@ async function addDomain(domainData) {
   
   // 验证域名数据
   const isPermanent = domainData.renewCycle && domainData.renewCycle.unit === 'permanent';
-  if (!domainData.name || !domainData.registrationDate || (!isPermanent && !domainData.expiryDate)) {
-    throw new Error(isPermanent ? '域名和注册时间为必填项' : '域名、注册时间和到期日期为必填项');
+  if (!domainData.name || (!isPermanent && !domainData.expiryDate)) {
+    throw new Error(isPermanent ? '域名为必填项' : '域名和到期日期为必填项');
   }
   
   // 生成唯一ID
+  domainData.registrationDate = domainData.registrationDate || null;
   domainData.id = crypto.randomUUID();
 
   // 添加创建时间
@@ -8147,8 +8172,8 @@ async function updateDomain(id, domainData) {
   
   // 验证域名数据
   const isPermanent = domainData.renewCycle && domainData.renewCycle.unit === 'permanent';
-  if (!domainData.name || !domainData.registrationDate || (!isPermanent && !domainData.expiryDate)) {
-    throw new Error(isPermanent ? '域名和注册时间为必填项' : '域名、注册时间和到期日期为必填项');
+  if (!domainData.name || (!isPermanent && !domainData.expiryDate)) {
+    throw new Error(isPermanent ? '域名为必填项' : '域名和到期日期为必填项');
   }
   
   // 确保通知设置正确
@@ -8180,7 +8205,7 @@ async function updateDomain(id, domainData) {
     ...domains[index],
     name: domainData.name,
     expiryDate: domainData.expiryDate,
-    registrationDate: domainData.registrationDate !== undefined ? domainData.registrationDate : domains[index].registrationDate,
+    registrationDate: domainData.registrationDate !== undefined ? (domainData.registrationDate || null) : domains[index].registrationDate,
     registrar: domainData.registrar !== undefined ? domainData.registrar : domains[index].registrar,
     registeredAccount: domainData.registeredAccount !== undefined ? domainData.registeredAccount : domains[index].registeredAccount,
     categoryId: domainData.categoryId !== undefined ? domainData.categoryId : domains[index].categoryId, // 添加分类ID处理
