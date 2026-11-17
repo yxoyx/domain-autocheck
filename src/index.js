@@ -10,7 +10,7 @@ import { connect } from 'cloudflare:sockets';
 // 环境变量声明（运行时由 injectEnv 注入）
 let DOMAIN_MONITOR, TOKEN, SITE_NAME, LOGO_URL,
     BACKGROUND_URL, MOBILE_BACKGROUND_URL,
-    TG_TOKEN, TG_ID;
+    TG_TOKEN, TG_ID, BARK_SERVER, BARK_DEVICE_KEY, BARK_BASIC_AUTH;
 
 // 将环境变量注入模块作用域，使已有的 typeof VAR !== 'undefined' 检查继续工作
 function injectEnv(env) {
@@ -22,6 +22,9 @@ function injectEnv(env) {
 	if (env.MOBILE_BACKGROUND_URL !== undefined) MOBILE_BACKGROUND_URL = env.MOBILE_BACKGROUND_URL;
 	if (env.TG_TOKEN !== undefined) TG_TOKEN = env.TG_TOKEN;
 	if (env.TG_ID !== undefined) TG_ID = env.TG_ID;
+	if (env.BARK_SERVER !== undefined) BARK_SERVER = env.BARK_SERVER;
+	if (env.BARK_DEVICE_KEY !== undefined) BARK_DEVICE_KEY = env.BARK_DEVICE_KEY;
+	if (env.BARK_BASIC_AUTH !== undefined) BARK_BASIC_AUTH = env.BARK_BASIC_AUTH;
 }
 
 // ================================
@@ -4250,9 +4253,9 @@ const getHTMLContent = (title) => `
                                 <input type="number" class="form-control" id="domainNotifyDays" min="1" max="90" value="30">
                             </div>
                         </div>
+
                     </form>
-                </div>
-                <div class="modal-footer">
+
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><span style="color: white;"><i class="iconfont icon-xmark"></i> 取消</span></button>
                                 <button type="button" class="btn btn-primary" id="saveDomainBtn"><span style="color: white;"><i class="iconfont icon-save-3-fill"></i> 保存</span></button>
                 </div>
@@ -4374,6 +4377,29 @@ const getHTMLContent = (title) => `
                             <div class="mb-3">
                                 <button type="button" class="btn btn-info" id="testTelegramBtn"><i class="iconfont icon-paper-plane" style="color: white;"></i> <span style="color: white;">测试Telegram通知</span></button>
                                 <span id="testResult" class="ms-2"></span>
+                            </div>
+                        </div>
+
+                        <hr style="border-color: rgba(255, 255, 255, 0.1);">
+                        <h6 class="mb-3" style="display: flex; align-items: center; gap: 5px;"><i class="iconfont icon-bell" style="color: white;"></i> Bark 自建推送设置</h6>
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="barkEnabled">
+                            <label class="form-check-label" for="barkEnabled">启用 Bark 通知</label>
+                        </div>
+                        <div id="barkSettings" style="display: none;">
+                            <div class="mb-3">
+                                <label for="barkServer" class="form-label"><i class="iconfont icon-link"></i> Bark-Worker 服务地址</label>
+                                <input type="url" class="form-control" id="barkServer" placeholder="https://bark.example.com">
+                                <div class="form-text">填写自建 Bark-Worker 的 Worker 域名，不需要添加 /push</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="barkDeviceKey" class="form-label"><i class="iconfont icon-key"></i> 设备 Key</label>
+                                <input type="password" class="form-control" id="barkDeviceKey" autocomplete="new-password" placeholder="输入 Bark App 注册后获得的设备 Key">
+                                <div class="form-text">如果通过 BARK_DEVICE_KEY 环境变量配置，此处可以留空</div>
+                            </div>
+                            <div class="mb-3">
+                                <button type="button" class="btn btn-info" id="testBarkBtn"><i class="iconfont icon-paper-plane" style="color: white;"></i> <span style="color: white;">测试 Bark 通知</span></button>
+                                <span id="barkTestResult" class="ms-2"></span>
                             </div>
                         </div>
                     </form>
@@ -4772,6 +4798,14 @@ const getHTMLContent = (title) => `
             
             // 测试Telegram按钮
             document.getElementById('testTelegramBtn').addEventListener('click', testTelegram);
+
+            // Bark启用状态变化
+            document.getElementById('barkEnabled').addEventListener('change', function() {
+                document.getElementById('barkSettings').style.display = this.checked ? 'block' : 'none';
+            });
+
+            // 测试Bark按钮
+            document.getElementById('testBarkBtn').addEventListener('click', testBark);
             
             // 域名通知设置 - 全局/自定义切换
             document.getElementById('useGlobalSettings').addEventListener('change', function() {
@@ -5180,6 +5214,17 @@ const getHTMLContent = (title) => `
                 document.getElementById('telegramSettings').style.display = telegramConfig.enabled ? 'block' : 'none';
                 document.getElementById('notifyDays').value = telegramConfig.notifyDays || 30;
 
+                document.getElementById('barkEnabled').checked = !!telegramConfig.barkEnabled;
+                document.getElementById('barkSettings').style.display = telegramConfig.barkEnabled ? 'block' : 'none';
+                document.getElementById('barkServer').value = telegramConfig.barkServer || '';
+                document.getElementById('barkDeviceKey').value = telegramConfig.barkDeviceKey || '';
+                if (telegramConfig.barkServerFromEnv) {
+                    document.getElementById('barkServer').placeholder = '已通过 BARK_SERVER 环境变量配置';
+                }
+                if (telegramConfig.barkDeviceKeyFromEnv) {
+                    document.getElementById('barkDeviceKey').placeholder = '已通过 BARK_DEVICE_KEY 环境变量配置，可留空';
+                }
+
                 // 如果配置了默认展开域名，且当前不在"全部展开"模式
                 if (telegramConfig.expandDomains && viewMode !== 'expand-all') {
                     // 设置视图模式
@@ -5259,6 +5304,9 @@ const getHTMLContent = (title) => `
             const botToken = document.getElementById('telegramToken').value;
             const chatId = document.getElementById('telegramChatId').value;
             const notifyDays = parseInt(document.getElementById('notifyDays').value) || 30;
+            const barkEnabled = document.getElementById('barkEnabled').checked;
+            const barkServer = document.getElementById('barkServer').value.trim();
+            const barkDeviceKey = document.getElementById('barkDeviceKey').value.trim();
             
             try {
                 const response = await fetch('/api/telegram/config', {
@@ -5271,7 +5319,10 @@ const getHTMLContent = (title) => `
                         enabled,
                         botToken,
                         chatId,
-                        notifyDays
+                        notifyDays,
+                        barkEnabled,
+                        barkServer,
+                        barkDeviceKey
                     })
                 });
                 
@@ -5330,6 +5381,23 @@ const getHTMLContent = (title) => `
             }
         }
         
+        // 测试Bark通知
+        async function testBark() {
+            const resultElement = document.getElementById('barkTestResult');
+            resultElement.textContent = '发送中...';
+            resultElement.className = 'ms-2 text-info';
+            try {
+                const response = await fetch('/api/bark/test', { method: 'POST' });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || '测试失败');
+                resultElement.textContent = '测试成功！请检查 iPhone';
+                resultElement.className = 'ms-2 telegram-test-success';
+            } catch (error) {
+                resultElement.textContent = '测试失败: ' + error.message;
+                resultElement.className = 'ms-2 text-danger';
+            }
+        }
+
         // 渲染域名列表
         async function renderDomainList() {
             // 更新总域名数量统计
@@ -7336,6 +7404,16 @@ async function handleApiRequest(request) {
     }
   }
 
+  // 测试Bark通知
+  if (path === '/api/bark/test' && request.method === 'POST') {
+    try {
+      const result = await testBarkNotification();
+      return jsonResponse(result);
+    } catch (error) {
+      return jsonResponse({ error: '测试Bark通知失败: ' + error.message }, 400);
+    }
+  }
+
   
   // ================================
   // 分类管理API
@@ -7829,6 +7907,11 @@ async function getTelegramConfig() {
     expandDomains: !!config.expandDomains, // 返回域名展开配置
     progressStyle: config.progressStyle || 'bar', // 返回进度样式配置
     cardLayout: config.cardLayout || '4', // 返回卡片布局配置
+    barkEnabled: !!config.barkEnabled,
+    barkServer: (typeof BARK_SERVER !== 'undefined' && BARK_SERVER) ? '' : (config.barkServer || ''),
+    barkDeviceKey: (typeof BARK_DEVICE_KEY !== 'undefined' && BARK_DEVICE_KEY) ? '' : (config.barkDeviceKey || ''),
+    barkServerFromEnv: typeof BARK_SERVER !== 'undefined' && !!BARK_SERVER,
+    barkDeviceKeyFromEnv: typeof BARK_DEVICE_KEY !== 'undefined' && !!BARK_DEVICE_KEY,
   };
 }
 
@@ -7853,7 +7936,18 @@ async function saveTelegramConfig(configData) {
     }
   }
   
-  // 保存配置到KV - 即使值为空也保存，表示用户有意清除值
+  // Bark启用时必须提供服务地址和设备Key（可由环境变量提供）
+  if (configData.barkEnabled) {
+    const barkServer = configData.barkServer || (typeof BARK_SERVER !== 'undefined' ? BARK_SERVER : '');
+    const barkDeviceKey = configData.barkDeviceKey || (typeof BARK_DEVICE_KEY !== 'undefined' ? BARK_DEVICE_KEY : '');
+    if (!barkServer) throw new Error('启用Bark通知需要提供 Bark-Worker 服务地址或配置 BARK_SERVER');
+    if (!barkDeviceKey) throw new Error('启用Bark通知需要提供设备Key或配置 BARK_DEVICE_KEY');
+    let parsedServer;
+    try { parsedServer = new URL(barkServer); } catch (_) { throw new Error('Bark-Worker 服务地址格式不正确'); }
+    if (parsedServer.protocol !== 'https:') throw new Error('Bark-Worker 服务地址必须使用 HTTPS');
+  }
+
+  // 保存配置到KV - 保留既有 Telegram 配置，并增加 Bark 字段
   const config = {
     enabled: !!configData.enabled,
     botToken: configData.botToken, // 可能为空字符串，表示用户清除了值
@@ -7862,6 +7956,9 @@ async function saveTelegramConfig(configData) {
     expandDomains: !!configData.expandDomains, // 保存域名展开配置
     progressStyle: configData.progressStyle || 'bar', // 保存进度样式配置
     cardLayout: configData.cardLayout || '4', // 保存卡片布局配置
+    barkEnabled: !!configData.barkEnabled,
+    barkServer: configData.barkServer || '',
+    barkDeviceKey: configData.barkDeviceKey || '',
   };
   
   await DOMAIN_MONITOR.put('telegram_config', JSON.stringify(config));
@@ -7905,6 +8002,11 @@ async function saveTelegramConfig(configData) {
     expandDomains: config.expandDomains, // 返回域名展开配置
     progressStyle: config.progressStyle, // 返回进度样式配置
     cardLayout: config.cardLayout, // 返回卡片布局配置
+    barkEnabled: config.barkEnabled,
+    barkServer: (typeof BARK_SERVER !== 'undefined' && BARK_SERVER) ? '' : (config.barkServer || ''),
+    barkDeviceKey: (typeof BARK_DEVICE_KEY !== 'undefined' && BARK_DEVICE_KEY) ? '' : (config.barkDeviceKey || ''),
+    barkServerFromEnv: typeof BARK_SERVER !== 'undefined' && !!BARK_SERVER,
+    barkDeviceKeyFromEnv: typeof BARK_DEVICE_KEY !== 'undefined' && !!BARK_DEVICE_KEY,
   };
 }
 
@@ -7997,6 +8099,9 @@ async function getTelegramConfigWithToken() {
     botToken: config.botToken || '',
     chatId: config.chatId || '',
     notifyDays: config.notifyDays || 30,
+    barkEnabled: !!config.barkEnabled,
+    barkServer: (typeof BARK_SERVER !== 'undefined' && BARK_SERVER) ? BARK_SERVER : (config.barkServer || ''),
+    barkDeviceKey: (typeof BARK_DEVICE_KEY !== 'undefined' && BARK_DEVICE_KEY) ? BARK_DEVICE_KEY : (config.barkDeviceKey || ''),
   };
 }
 
@@ -8178,6 +8283,82 @@ async function moveCategoryOrder(id, direction) {
 
 // ================================
 
+// ================================
+// Bark-Worker 推送
+// ================================
+
+// 将 Telegram HTML 消息转换为纯文本，供 Bark 通知使用
+function telegramHtmlToPlainText(message) {
+  return String(message)
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/?b>/gi, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+async function sendBarkNotification(config, title, body) {
+  if (!config || !config.barkEnabled) return { skipped: true };
+  const server = (config.barkServer || (typeof BARK_SERVER !== 'undefined' ? BARK_SERVER : '') || '').trim().replace(/\/+$/, '');
+  const deviceKey = config.barkDeviceKey || (typeof BARK_DEVICE_KEY !== 'undefined' ? BARK_DEVICE_KEY : '');
+  if (!server || !deviceKey) throw new Error('Bark-Worker 地址或设备 Key 未配置');
+
+  let serverUrl;
+  try { serverUrl = new URL(server); } catch (_) { throw new Error('Bark-Worker 地址格式不正确'); }
+  if (serverUrl.protocol !== 'https:') throw new Error('Bark-Worker 地址必须使用 HTTPS');
+
+  const headers = { 'Content-Type': 'application/json; charset=utf-8' };
+  if (typeof BARK_BASIC_AUTH !== 'undefined' && BARK_BASIC_AUTH) {
+    headers.Authorization = 'Basic ' + btoa(BARK_BASIC_AUTH);
+  }
+
+  const response = await fetch(server + '/push', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      device_key: deviceKey,
+      title: title || '域名到期监控',
+      body: String(body || '').slice(0, 3500),
+      group: 'domain-autocheck',
+      sound: 'bell'
+    })
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error('Bark-Worker 推送失败: HTTP ' + response.status + (responseText ? ' - ' + responseText.slice(0, 240) : ''));
+  }
+  let result = {};
+  try { result = responseText ? JSON.parse(responseText) : {}; } catch (_) {}
+  if (result.code !== undefined && Number(result.code) !== 200) {
+    throw new Error('Bark-Worker 返回错误: ' + (result.message || result.error || responseText.slice(0, 240)));
+  }
+  return result;
+}
+
+async function sendNotificationChannels(config, message, barkTitle) {
+  const tasks = [];
+  if (config && config.enabled) {
+    tasks.push(sendTelegramMessage(config, message));
+  }
+  if (config && config.barkEnabled) {
+    tasks.push(sendBarkNotification(config, barkTitle, telegramHtmlToPlainText(message)));
+  }
+  if (tasks.length === 0) return;
+  const results = await Promise.allSettled(tasks);
+  const errors = results.filter(result => result.status === 'rejected').map(result => result.reason && result.reason.message ? result.reason.message : String(result.reason));
+  if (errors.length === results.length) throw new Error(errors.join('；'));
+  if (errors.length) console.warn('[notification] 部分通知渠道发送失败:', errors.join('；'));
+  return { success: errors.length === 0, errors };
+}
+
+async function testBarkNotification() {
+  const config = await getTelegramConfigWithToken();
+  if (!config.barkEnabled) throw new Error('Bark通知未启用');
+  const body = '这是一条 Domain-AutoCheck 自建 Bark-Worker 测试通知。\n如果你收到此消息，说明 Bark 推送配置正常。';
+  await sendBarkNotification(config, '🔔 Bark 通知测试成功', body);
+  return { success: true, message: '测试通知已发送' };
+}
+
 // 发送Telegram消息
 async function sendTelegramMessage(config, message) {
   // 优先使用配置中的值，如果没有则使用环境变量或代码中的值
@@ -8238,7 +8419,7 @@ async function checkExpiringDomains() {
   
   // 获取Telegram配置
   const telegramConfig = await getTelegramConfigWithToken();
-  const globalNotifyDays = telegramConfig.enabled ? telegramConfig.notifyDays : 30;
+  const globalNotifyDays = telegramConfig.notifyDays || 30;
   
   // 判断域名是否符合过期提醒条件的辅助函数
   function needsExpiryNotify(domain) {
@@ -8328,21 +8509,23 @@ async function checkExpiringDomains() {
     await DOMAIN_MONITOR.put('domains', JSON.stringify(domains));
   }
   
-  // 第四步：发送Telegram通知
-  if (telegramConfig.enabled && 
-      ((telegramConfig.botToken || typeof TG_TOKEN !== 'undefined') && 
-       (telegramConfig.chatId || typeof TG_ID !== 'undefined'))) {
+  // 第四步：分别向已启用的通知渠道发送消息；某一渠道失败不影响另一渠道
+  if (telegramConfig.enabled || telegramConfig.barkEnabled) {
+    // Telegram配置不完整时跳过Telegram，但仍允许Bark正常推送
+    if (telegramConfig.enabled &&
+        !((telegramConfig.botToken || typeof TG_TOKEN !== 'undefined') &&
+          (telegramConfig.chatId || typeof TG_ID !== 'undefined'))) {
+      telegramConfig.enabled = false;
+    }
     try {
-      // 发送过期提醒通知
       if (expiringDomains.length > 0 || expiredDomains.length > 0) {
         await sendCombinedDomainsNotification(telegramConfig, expiringDomains, expiredDomains);
       }
-      // 发送域名到期日期自动更新通知
       if (updatedDomains.length > 0) {
         await sendDateUpdatedNotification(telegramConfig, updatedDomains);
       }
     } catch (error) {
-      // 静默处理Telegram通知发送失败
+      console.error('[notification] 通知发送失败:', error.message || error);
     }
   }
 }
@@ -8394,7 +8577,7 @@ async function sendExpiringDomainsNotification(config, domains, isExpired) {
   });
   
   // 发送消息
-  return await sendTelegramMessage(config, message);
+  return await sendNotificationChannels(config, message, isExpired ? '域名已过期提醒' : '域名到期提醒');
 }
 
 // 发送合并的域名通知（即将到期和已过期）
@@ -8477,7 +8660,7 @@ async function sendCombinedDomainsNotification(config, expiringDomains, expiredD
   }
   
   // 发送消息
-  return await sendTelegramMessage(config, message);
+  return await sendNotificationChannels(config, message, '域名到期/过期提醒');
 }
 
 // 发送域名到期日期自动更新通知
@@ -8506,7 +8689,7 @@ async function sendDateUpdatedNotification(config, updatedDomains) {
     message += '📈 续期增加: ' + domain.addedDays + ' 天\n';
   });
   
-  return await sendTelegramMessage(config, message);
+  return await sendNotificationChannels(config, message, '域名到期日期自动更新');
 }
 
 
