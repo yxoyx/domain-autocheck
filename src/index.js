@@ -6353,9 +6353,15 @@ const getHTMLContent = (title) => `
             if (!domainListContainer._delegated) {
                 domainListContainer._delegated = true;
                 domainListContainer.addEventListener('click', function(e) {
-                    const editBtn = e.target.closest('.edit-domain');
+                    const clickTarget = e.target && e.target.closest ? e.target : (e.target && e.target.parentElement);
+                    const editBtn = clickTarget && clickTarget.closest ? clickTarget.closest('.edit-domain') : null;
                     if (editBtn) {
-                        editDomain(editBtn.dataset.id);
+                        try {
+                            editDomain(editBtn.dataset.id);
+                        } catch (error) {
+                            console.error('打开域名编辑窗口失败:', error);
+                            showAlert('danger', '打开编辑窗口失败：' + (error && error.message ? error.message : '未知错误'));
+                        }
                         return;
                     }
 
@@ -6570,12 +6576,16 @@ const getHTMLContent = (title) => `
                 
                 // 编辑域名
                 function editDomain(id) {
-                    const domain = domains.find(d => d.id === id);
-                    if (!domain) return;
+                    // API 返回的 id 可能是数字或字符串，统一转成字符串比较，避免点击编辑后静默找不到记录。
+                    const domain = domains.find(d => String(d.id) === String(id));
+                    if (!domain) {
+                        showAlert('warning', '未找到要编辑的域名，请刷新列表后重试');
+                        return;
+                    }
                     
                     document.getElementById('domainId').value = domain.id;
                     document.getElementById('domainName').value = domain.name;
-                    document.getElementById('expiryDate').value = domain.expiryDate;
+                    document.getElementById('expiryDate').value = domain.expiryDate || '';
                     document.getElementById('registrationDate').value = domain.registrationDate !== undefined ? domain.registrationDate : '';
                     document.getElementById('registrar').value = domain.registrar !== undefined ? domain.registrar : '';
                     document.getElementById('registeredAccount').value = domain.registeredAccount !== undefined ? domain.registeredAccount : '';
@@ -6594,11 +6604,9 @@ const getHTMLContent = (title) => `
                     if (domain.renewCycle) {
                         document.getElementById('renewCycleValue').value = domain.renewCycle.value || 1;
                         document.getElementById('renewCycleUnit').value = domain.renewCycle.unit || 'year';
-                        updateExpiryDateRequirement();
                     } else {
                         document.getElementById('renewCycleValue').value = 1;
                         document.getElementById('renewCycleUnit').value = 'year';
-                        updateExpiryDateRequirement();
                     }
                     
                     // 设置价格
@@ -6651,8 +6659,12 @@ const getHTMLContent = (title) => `
                                 helpText.className = 'form-text text-info';
                             }
                         }
-                        updateExpiryDateRequirement();
-                        updateNotePreview(); // 更新备注预览
+                        try {
+                            updateExpiryDateRequirement();
+                            updateNotePreview(); // 更新备注预览
+                        } catch (error) {
+                            console.error('编辑表单初始化失败:', error);
+                        }
                     }, 100);
                 }
                 
