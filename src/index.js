@@ -4954,6 +4954,33 @@ const getHTMLContent = (title) => `
         
         // 全局变量用于存储当前查询的控制器
         let currentWhoisController = null;
+
+        // 更新到期日期必填状态。放在 setupEventListeners 外层，确保
+        // saveDomain、resetForm、editDomain 等函数都能访问到它。
+        function updateExpiryDateRequirement() {
+            const unitInput = document.getElementById('renewCycleUnit');
+            const expiryInput = document.getElementById('expiryDate');
+            if (!unitInput || !expiryInput) return;
+
+            const isPermanent = unitInput.value === 'permanent';
+            const requiredMark = document.getElementById('expiryRequiredMark');
+            const helpText = document.getElementById('expiryDateHelp');
+            const cycleValue = document.getElementById('renewCycleValue');
+
+            if (cycleValue) {
+                cycleValue.disabled = isPermanent;
+                cycleValue.style.display = isPermanent ? 'none' : '';
+            }
+            expiryInput.required = !isPermanent;
+            if (requiredMark) requiredMark.style.display = isPermanent ? 'none' : 'inline';
+            if (helpText) {
+                helpText.textContent = isPermanent
+                    ? '永久有效，无需填写到期日期，也不会触发到期提醒'
+                    : '根据注册时间和续期周期自动计算，可手动调整';
+                helpText.className = isPermanent ? 'form-text text-success' : 'form-text text-info';
+            }
+            if (isPermanent) expiryInput.value = '';
+        }
         
         // 设置事件监听器
         function setupEventListeners() {
@@ -5181,22 +5208,6 @@ const getHTMLContent = (title) => `
             });
             
             // 永久周期不需要到期日期；普通周期仍要求填写到期日期
-            function updateExpiryDateRequirement() {
-                const isPermanent = document.getElementById('renewCycleUnit').value === 'permanent';
-                const expiryInput = document.getElementById('expiryDate');
-                const requiredMark = document.getElementById('expiryRequiredMark');
-                const helpText = document.getElementById('expiryDateHelp');
-                const cycleValue = document.getElementById('renewCycleValue');
-                cycleValue.disabled = isPermanent;
-                cycleValue.style.display = isPermanent ? 'none' : '';
-                expiryInput.required = !isPermanent;
-                if (requiredMark) requiredMark.style.display = isPermanent ? 'none' : 'inline';
-                if (helpText) {
-                    helpText.textContent = isPermanent ? '永久有效，无需填写到期日期，也不会触发到期提醒' : '根据注册时间和续期周期自动计算，可手动调整';
-                    helpText.className = isPermanent ? 'form-text text-success' : 'form-text text-info';
-                }
-                if (isPermanent) expiryInput.value = '';
-            }
             document.getElementById('renewCycleUnit').addEventListener('change', updateExpiryDateRequirement);
 
             // 根据注册时间和续期周期自动计算到期日期
