@@ -9520,7 +9520,53 @@ function getSetupHTML() {
                 padding: 12px;
             }
     }
-  </style>
+  
+        /* 卡片高度统一：折叠状态下所有卡片头部保持一致 */
+        .domain-card > .card-header {
+            height: 104px;
+            min-height: 104px;
+            max-height: 104px;
+            box-sizing: border-box;
+            align-items: center;
+        }
+        .domain-card > .card-header .domain-header {
+            height: 100%;
+            min-height: 0;
+            max-height: none;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .domain-card > .card-header .domain-title {
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+            white-space: normal;
+            line-height: 1.35;
+            max-height: 2.7em;
+        }
+        .domain-card > .card-header .domain-meta {
+            min-height: 18px;
+            max-height: 20px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .domain-card > .card-header .spacer {
+            height: 4px !important;
+            min-height: 4px;
+        }
+        .domain-card > .card-header .domain-status {
+            align-self: center;
+        }
+        @media (max-width: 767.98px) {
+            .domain-card > .card-header {
+                height: 100px;
+                min-height: 100px;
+                max-height: 100px;
+            }
+        }
+</style>
 </head>
 <body>
   <div class="setup-container">
