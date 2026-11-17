@@ -542,6 +542,7 @@ const FREE_SUBDOMAIN_SUFFIXES = [
   { suffix: 'dpdns.org', provider: 'digitalplat' },
   { suffix: 'us.kg', provider: 'digitalplat' },
   { suffix: 'xx.kg', provider: 'digitalplat' },
+  { suffix: 'qd.je', provider: 'digitalplat' },
   { suffix: 'indevs.in', provider: 'stackryze' },
   { suffix: 'sryze.cc', provider: 'stackryze' },
   { suffix: 'ryzedns.org', provider: 'stackryze' },
@@ -552,6 +553,14 @@ const FREE_SUBDOMAIN_SUFFIXES = [
   { suffix: 'cc.cd', provider: 'dnshe' },
   { suffix: 'bot.cd', provider: 'dnshe' },
   { suffix: 'ccwu.cc', provider: 'dnshe' },
+  // 仅支持手动录入：这些共享免费子域名没有可稳定依赖的公开注册信息接口。
+  { suffix: 'cloudns.org', provider: 'manual-cloudns' },
+  { suffix: 'cloudns.biz', provider: 'manual-cloudns' },
+  { suffix: 'cloudns.info', provider: 'manual-cloudns' },
+  { suffix: 'cloudns.us', provider: 'manual-cloudns' },
+  { suffix: 'cloudns.eu', provider: 'manual-cloudns' },
+  { suffix: 'cloudns.in', provider: 'manual-cloudns' },
+  { suffix: 'eu.org', provider: 'manual-euorg' },
 ];
 
 export function getFreeSubdomainProvider(domainName) {
@@ -576,6 +585,7 @@ async function getWhoisQueryFunction(domainName) {
   if (provider === 'digitalplat') return queryDigitalPlatWhois;
   if (provider === 'stackryze') return queryStackryzeWhois;
   if (provider === 'dnshe') return queryDnsheWhois;
+  if (provider === 'manual-cloudns' || provider === 'manual-euorg') return null;
 
   // 一级域名：通过 IANA RDAP Bootstrap 自动发现任意已登记 TLD 的权威 RDAP 服务。
   if (await isRegistrableDomainName(lowerDomain)) return queryFirstLevelDomain;
@@ -1849,7 +1859,16 @@ async function probeDomainWhoisChannels(domain) {
   let provider = 'unsupported';
   let methods = [];
 
-  if (freeProvider === 'dnshe') {
+  if (freeProvider === 'manual-cloudns' || freeProvider === 'manual-euorg') {
+    provider = freeProvider;
+    methods = [{
+      id: 'manual-entry',
+      name: '手动录入',
+      ok: null,
+      durationMs: 0,
+      result: { success: false, error: '该免费子域名没有可依赖的公开 WHOIS/RDAP 查询接口，请手动填写注册日期和到期日期。' }
+    }];
+  } else if (freeProvider === 'dnshe') {
     provider = 'dnshe';
     methods = await Promise.all([
       runWhoisProbeMethod(
@@ -4487,7 +4506,7 @@ const getHTMLContent = (title) => `
                                     <i class="iconfont icon-qingchu"></i><span> 清除</span>
                                 </button>
                             </div>
-                            <div class="form-text">输入域名后点击"查询"可自动填充注册信息</div>
+                            <div class="form-text">输入域名后点击“查询”可自动填充注册信息；若没有可靠查询接口（如 EU.org、ClouDNS），仍可直接手动填写注册时间和到期日期后添加。</div>
                             <div id="whoisQueryStatus" class="mt-2" style="display: none;"></div>
                         </div>
                         <div class="mb-3">
@@ -7189,7 +7208,7 @@ const getHTMLContent = (title) => `
                             // 查询成功，填充表单数据
                             const fillResult = fillFormWithWhoisData(result);
                             if (fillResult) {
-                                showWhoisStatus('域名信息查询成功，已自动填充相关字段', 'success');
+                                showWhoisStatus(result.note || '域名信息查询成功，已自动填充相关字段', result.note ? 'warning' : 'success');
                             }
                         } else {
                             // 查询失败
@@ -7237,7 +7256,7 @@ const getHTMLContent = (title) => `
                         registrarName = 'NIC.UA';
                     } else if (domainName.endsWith('.eu.cc')) {
                         registrarName = 'Gname.com';
-                    } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg')) {
+                    } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg') || domainName.endsWith('.qd.je')) {
                         registrarName = 'DigitalPlat.org';
                     } else if (domainName.endsWith('.indevs.in') || domainName.endsWith('.sryze.cc') || domainName.endsWith('.ryzedns.org') || domainName.endsWith('.nx.kg')) {
                         registrarName = 'Stackryze Domains';
@@ -7263,7 +7282,7 @@ const getHTMLContent = (title) => `
                             renewLinkField.value = 'https://www.gname.com/user';
                             renewLinkField.classList.add('auto-filled');
                             filledFields.push('续费链接');
-                        } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg')) {
+                        } else if (domainName.endsWith('.qzz.io') || domainName.endsWith('.dpdns.org') || domainName.endsWith('.us.kg') || domainName.endsWith('.xx.kg') || domainName.endsWith('.qd.je')) {
                             renewLinkField.value = 'https://dash.domain.digitalplat.org/panel/main?page=%2Fpanel%2Fdomains';
                             renewLinkField.classList.add('auto-filled');
                             filledFields.push('续费链接');
@@ -7867,7 +7886,21 @@ async function handleApiRequest(request) {
       }
 
       let result;
-      if (freeProvider === 'pp.ua') {
+      if (freeProvider === 'manual-cloudns' || freeProvider === 'manual-euorg') {
+        const isCloudns = freeProvider === 'manual-cloudns';
+        result = {
+          success: true,
+          registered: null,
+          domain,
+          provider: isCloudns ? 'ClouDNS（手动录入）' : 'EU.org（手动录入）',
+          registrar: isCloudns ? 'ClouDNS' : 'EU.org',
+          registrationDate: null,
+          expiryDate: null,
+          note: isCloudns
+            ? 'ClouDNS 免费 hostname 没有可供本工具可靠判断注册状态和到期日的公开 RDAP/WHOIS 接口；请以 ClouDNS 控制台为准，手动填写日期。'
+            : 'EU.org 域名申请需人工审核；公开查询不能可靠代表申请可用性或审批状态。请以 EU.org 控制台/邮件为准，手动填写日期。'
+        };
+      } else if (freeProvider === 'pp.ua') {
         result = await queryPpUaWhois(domain);
       } else if (freeProvider === 'eu.cc') {
         result = await queryEuCcWhois(domain);
