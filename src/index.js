@@ -5998,23 +5998,8 @@ const getHTMLContent = (title) => `
                 // 根据配置决定列数
                 const cardLayout = telegramConfig.cardLayout || '4';
                 const numColumns = parseInt(cardLayout);
-                const columns = [];
-                
-                // 创建列
-                for (let i = 0; i < numColumns; i++) {
-                    const col = document.createElement('div');
-                    // 动态设置列宽类
-                    if (numColumns === 4) {
-                        // 4列模式：在大屏幕(lg)及以上占3份(1/4)，中屏幕(md)占6份(1/2)
-                        col.className = 'col-md-6 col-lg-3 domain-column px-1-5';
-                    } else {
-                        // 3列模式：在大屏幕(lg)及以上占4份(1/3)，中屏幕(md)占6份(1/2)
-                        col.className = 'col-md-6 col-lg-4 domain-column px-1-5';
-                    }
-                    col.id = 'column-' + (i+1); // 方便调试，虽然后面不一定用到ID
-                    domainsRow.appendChild(col);
-                    columns.push(col);
-                }
+                // 卡片直接作为 CSS Grid 子项排列，避免旧版“按列堆叠”造成各列起始位置和行高不一致。
+                domainsRow.style.setProperty('--domain-card-columns', String(numColumns === 3 ? 3 : 4));
                 
                 // 如果分类下没有域名，显示提示信息
                 if (groupDomains.length === 0) {
@@ -6035,24 +6020,11 @@ const getHTMLContent = (title) => `
                     return; // 跳过域名卡片创建
                 }
                 
-                // 为每个域名创建卡片，并按列分配
+                // 每张卡片直接加入网格；同一网格行自动采用最高卡片的高度。
                 groupDomains.forEach((domain, index) => {
-                    // 检测屏幕尺寸，决定分配策略
-                    let columnIndex;
-                    const isMobile = window.innerWidth < 768; // Bootstrap的md断点
-                    
-                    if (isMobile) {
-                        // 移动端：所有域名都放在第一列，保持排序顺序
-                        columnIndex = 0;
-                    } else {
-                        // PC端：按列分配，轮询分配到各列
-                        columnIndex = index % numColumns;
-                    }
-                    
-                    const targetColumn = columns[columnIndex];
-                    // 创建卡片容器
+                    const targetColumn = domainsRow;
                     const domainCard = document.createElement('div');
-                    domainCard.className = 'mb-2'; // 简化类名，不再需要列类
+                    domainCard.className = 'domain-grid-item';
                     
                     const daysLeft = domain.daysLeft;
                     
@@ -9597,7 +9569,7 @@ function getSetupHTML() {
             }
         }
 
-        /* 卡片等高：同一网格行以最高卡片为基准拉伸，不裁切内容 */
+        /* 卡片按真正的行列网格排列：每行顶部对齐，并按该行最高卡片统一高度 */
         .domain-card-grid {
             display: grid !important;
             grid-template-columns: repeat(var(--domain-card-columns, 4), minmax(0, 1fr));
@@ -9606,23 +9578,22 @@ function getSetupHTML() {
             margin-left: 0;
             margin-right: 0;
         }
-        .domain-card-grid > .domain-column {
-            display: contents !important;
-            width: auto;
-            max-width: none;
-            padding-left: 0 !important;
-            padding-right: 0 !important;
-        }
-        .domain-card-grid > .domain-column > .mb-2 {
+        .domain-card-grid > .domain-grid-item {
             display: flex;
+            align-items: stretch;
             min-width: 0;
-            height: 100%;
-            margin-bottom: 0 !important;
+            margin: 0 !important;
         }
-        .domain-card-grid .domain-card,
-        .domain-card-grid .domain-card > .card {
+        .domain-card-grid > .domain-grid-item > .card {
+            display: flex;
+            flex-direction: column;
             width: 100%;
             height: 100%;
+            min-width: 0;
+        }
+        .domain-card-grid > .domain-grid-item > .card > .card-header,
+        .domain-card-grid > .domain-grid-item > .card > .collapse {
+            flex-shrink: 0;
         }
         .domain-card-grid .card-placeholder {
             visibility: hidden;
