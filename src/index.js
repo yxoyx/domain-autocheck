@@ -8246,7 +8246,8 @@ async function updateDomain(id, domainData) {
     registrationDate: domainData.registrationDate !== undefined ? (domainData.registrationDate || null) : domains[index].registrationDate,
     registrar: domainData.registrar !== undefined ? domainData.registrar : domains[index].registrar,
     registeredAccount: domainData.registeredAccount !== undefined ? domainData.registeredAccount : domains[index].registeredAccount,
-    cloudflareAccountNote: domainData.cloudflareAccountNote !== undefined ? domainData.cloudflareAccountNote : domains[index].cloudflareAccountNote,\n    hostingProvider: domainData.hostingProvider !== undefined ? domainData.hostingProvider : domains[index].hostingProvider,\n    hostingProviderOther: domainData.hostingProviderOther !== undefined ? domainData.hostingProviderOther : domains[index].hostingProviderOther,
+    cloudflareAccountNote: domainData.cloudflareAccountNote !== undefined ? domainData.cloudflareAccountNote : domains[index].cloudflareAccountNote,
+    hostingProvider: domainData.hostingProvider !== undefined ? domainData.hostingProvider : domains[index].hostingProvider,\n    hostingProviderOther: domainData.hostingProviderOther !== undefined ? domainData.hostingProviderOther : domains[index].hostingProviderOther,
     categoryId: domainData.categoryId !== undefined ? domainData.categoryId : domains[index].categoryId, // 添加分类ID处理
     customNote: domainData.customNote !== undefined ? domainData.customNote : domains[index].customNote, // 正确处理空字符串
     noteColor: domainData.noteColor !== undefined ? domainData.noteColor : domains[index].noteColor, // 添加备注颜色处理
