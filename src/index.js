@@ -5574,7 +5574,7 @@ const getHTMLContent = (title) => `
             
             try {
                 const cardLayout = telegramConfig.cardLayout || '4';
-                const numColumns = parseInt(cardLayout);\n                domainsRow.style.setProperty('--domain-card-columns', String(numColumns === 3 ? 3 : 4));
+                const numColumns = parseInt(cardLayout, 10);
                 let html = '';
                 
                 for (let i = 0; i < numColumns; i++) {
@@ -5992,7 +5992,7 @@ const getHTMLContent = (title) => `
                 
                 // 创建域名卡片行容器
                 const domainsRow = document.createElement('div');
-                domainsRow.className = 'row g-2 domain-card-grid';
+                domainsRow.className = 'domain-card-grid';
                 groupContainer.appendChild(domainsRow);
                 
                 // 根据配置决定列数
@@ -9572,16 +9572,21 @@ function getSetupHTML() {
         /* 卡片按真正的行列网格排列：每行顶部对齐，并按该行最高卡片统一高度 */
         .domain-card-grid {
             display: grid !important;
+            width: 100%;
+            box-sizing: border-box;
             grid-template-columns: repeat(var(--domain-card-columns, 4), minmax(0, 1fr));
+            grid-auto-flow: row;
             align-items: stretch;
             gap: 12px;
-            margin-left: 0;
-            margin-right: 0;
+            margin: 0;
         }
         .domain-card-grid > .domain-grid-item {
             display: flex;
             align-items: stretch;
             min-width: 0;
+            width: auto;
+            max-width: none;
+            padding: 0;
             margin: 0 !important;
         }
         .domain-card-grid > .domain-grid-item > .card {
