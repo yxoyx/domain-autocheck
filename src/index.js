@@ -6502,7 +6502,9 @@ const getHTMLContent = (title) => `
             const registrationDate = document.getElementById('registrationDate').value;
             const registrar = document.getElementById('registrar').value;
             const registeredAccount = document.getElementById('registeredAccount').value;
-            const hostingProvider = document.getElementById('hostingProvider').value;\n            const hostingProviderOther = document.getElementById('hostingProviderOther').value.trim();\n            const cloudflareAccountNote = domainId ? ((domains.find(d => String(d.id) === String(domainId)) || {}).cloudflareAccountNote || '') : ''; // 保留旧记录，避免编辑时丢失历史备注
+            const hostingProvider = document.getElementById('hostingProvider').value;
+            const hostingProviderOther = document.getElementById('hostingProviderOther').value.trim();
+            const cloudflareAccountNote = domainId ? ((domains.find(d => String(d.id) === String(domainId)) || {}).cloudflareAccountNote || '') : ''; // 保留旧记录，避免编辑时丢失历史备注
             const categoryId = document.getElementById('domainCategory').value || 'default';
             const customNote = document.getElementById('customNote').value;
             const noteColor = document.getElementById('noteColor').value;
@@ -6550,6 +6552,8 @@ const getHTMLContent = (title) => `
                 registrationDate: registrationDate || null,
                 registrar,
                 registeredAccount,
+                hostingProvider: hostingProvider === '其他' ? hostingProviderOther : hostingProvider,
+                hostingProviderOther: hostingProvider === '其他' ? hostingProviderOther : '',
                 cloudflareAccountNote,
                 categoryId,
                 customNote,
@@ -6850,7 +6854,13 @@ const getHTMLContent = (title) => `
                     document.getElementById('registrationDate').value = '';
                     document.getElementById('registrar').value = '';
                     document.getElementById('registeredAccount').value = '';
-                    document.getElementById('cloudflareAccountNote').value = '';
+                    const hostingProviderInput = document.getElementById('hostingProvider');
+                    const hostingProviderOtherInput = document.getElementById('hostingProviderOther');
+                    if (hostingProviderInput) hostingProviderInput.value = '';
+                    if (hostingProviderOtherInput) {
+                        hostingProviderOtherInput.value = '';
+                        hostingProviderOtherInput.style.display = 'none';
+                    }
                     document.getElementById('customNote').value = '';
                     document.getElementById('noteColor').value = 'tag-blue'; // 重置为默认蓝色
                     document.getElementById('renewLink').value = '';
