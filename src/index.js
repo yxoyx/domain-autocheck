@@ -5574,7 +5574,7 @@ const getHTMLContent = (title) => `
             
             try {
                 const cardLayout = telegramConfig.cardLayout || '4';
-                const numColumns = parseInt(cardLayout, 10);
+                const numColumns = parseInt(cardLayout);\n                domainsRow.style.setProperty('--domain-card-columns', String(numColumns === 3 ? 3 : 4));
                 let html = '';
                 
                 for (let i = 0; i < numColumns; i++) {
@@ -5992,18 +5992,29 @@ const getHTMLContent = (title) => `
                 
                 // 创建域名卡片行容器
                 const domainsRow = document.createElement('div');
-                domainsRow.className = 'domain-card-grid';
+                domainsRow.className = 'row g-2 domain-card-grid';
                 groupContainer.appendChild(domainsRow);
                 
                 // 根据配置决定列数
-                // 列数以服务端保存的系统设置为准，并在渲染时写入 important 内联样式，
-                // 避免媒体查询、主题样式或旧版 CSS 覆盖桌面端的 3/4 列设置。
-                const configuredColumns = Number.parseInt(telegramConfig.cardLayout, 10);
-                const numColumns = configuredColumns === 3 ? 3 : 4;
-                domainsRow.style.setProperty('--domain-card-columns', String(numColumns));
-                domainsRow.style.setProperty('display', 'grid', 'important');
-                domainsRow.style.setProperty('grid-template-columns', `repeat(${numColumns}, minmax(0, 1fr))`, 'important');
-                domainsRow.style.setProperty('grid-auto-flow', 'row', 'important');
+                const cardLayout = telegramConfig.cardLayout || '4';
+                const numColumns = parseInt(cardLayout);
+                const columns = [];
+                
+                // 创建列
+                for (let i = 0; i < numColumns; i++) {
+                    const col = document.createElement('div');
+                    // 动态设置列宽类
+                    if (numColumns === 4) {
+                        // 4列模式：在大屏幕(lg)及以上占3份(1/4)，中屏幕(md)占6份(1/2)
+                        col.className = 'col-md-6 col-lg-3 domain-column px-1-5';
+                    } else {
+                        // 3列模式：在大屏幕(lg)及以上占4份(1/3)，中屏幕(md)占6份(1/2)
+                        col.className = 'col-md-6 col-lg-4 domain-column px-1-5';
+                    }
+                    col.id = 'column-' + (i+1); // 方便调试，虽然后面不一定用到ID
+                    domainsRow.appendChild(col);
+                    columns.push(col);
+                }
                 
                 // 如果分类下没有域名，显示提示信息
                 if (groupDomains.length === 0) {
@@ -6024,11 +6035,24 @@ const getHTMLContent = (title) => `
                     return; // 跳过域名卡片创建
                 }
                 
-                // 每张卡片直接加入网格；同一网格行自动采用最高卡片的高度。
+                // 为每个域名创建卡片，并按列分配
                 groupDomains.forEach((domain, index) => {
-                    const targetColumn = domainsRow;
+                    // 检测屏幕尺寸，决定分配策略
+                    let columnIndex;
+                    const isMobile = window.innerWidth < 768; // Bootstrap的md断点
+                    
+                    if (isMobile) {
+                        // 移动端：所有域名都放在第一列，保持排序顺序
+                        columnIndex = 0;
+                    } else {
+                        // PC端：按列分配，轮询分配到各列
+                        columnIndex = index % numColumns;
+                    }
+                    
+                    const targetColumn = columns[columnIndex];
+                    // 创建卡片容器
                     const domainCard = document.createElement('div');
-                    domainCard.className = 'domain-grid-item';
+                    domainCard.className = 'mb-2'; // 简化类名，不再需要列类
                     
                     const daysLeft = domain.daysLeft;
                     
@@ -8222,9 +8246,7 @@ async function updateDomain(id, domainData) {
     registrationDate: domainData.registrationDate !== undefined ? (domainData.registrationDate || null) : domains[index].registrationDate,
     registrar: domainData.registrar !== undefined ? domainData.registrar : domains[index].registrar,
     registeredAccount: domainData.registeredAccount !== undefined ? domainData.registeredAccount : domains[index].registeredAccount,
-    cloudflareAccountNote: domainData.cloudflareAccountNote !== undefined ? domainData.cloudflareAccountNote : domains[index].cloudflareAccountNote,
-    hostingProvider: domainData.hostingProvider !== undefined ? domainData.hostingProvider : domains[index].hostingProvider,
-    hostingProviderOther: domainData.hostingProviderOther !== undefined ? domainData.hostingProviderOther : domains[index].hostingProviderOther,
+    cloudflareAccountNote: domainData.cloudflareAccountNote !== undefined ? domainData.cloudflareAccountNote : domains[index].cloudflareAccountNote,\n    hostingProvider: domainData.hostingProvider !== undefined ? domainData.hostingProvider : domains[index].hostingProvider,\n    hostingProviderOther: domainData.hostingProviderOther !== undefined ? domainData.hostingProviderOther : domains[index].hostingProviderOther,
     categoryId: domainData.categoryId !== undefined ? domainData.categoryId : domains[index].categoryId, // 添加分类ID处理
     customNote: domainData.customNote !== undefined ? domainData.customNote : domains[index].customNote, // 正确处理空字符串
     noteColor: domainData.noteColor !== undefined ? domainData.noteColor : domains[index].noteColor, // 添加备注颜色处理
@@ -9573,42 +9595,43 @@ function getSetupHTML() {
             }
         }
 
-        /* 卡片按真正的行列网格排列：每行顶部对齐，并按该行最高卡片统一高度 */
+        /* 卡片等高：同一网格行以最高卡片为基准拉伸，不裁切内容 */
         .domain-card-grid {
             display: grid !important;
-            width: 100%;
-            box-sizing: border-box;
             grid-template-columns: repeat(var(--domain-card-columns, 4), minmax(0, 1fr));
-            grid-auto-flow: row;
             align-items: stretch;
             gap: 12px;
-            margin: 0;
+            margin-left: 0;
+            margin-right: 0;
         }
-        .domain-card-grid > .domain-grid-item {
-            display: flex;
-            align-items: stretch;
-            min-width: 0;
+        .domain-card-grid > .domain-column {
+            display: contents !important;
             width: auto;
             max-width: none;
-            padding: 0;
-            margin: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
         }
-        .domain-card-grid > .domain-grid-item > .card {
+        .domain-card-grid > .domain-column > .mb-2 {
             display: flex;
-            flex-direction: column;
+            min-width: 0;
+            height: 100%;
+            margin-bottom: 0 !important;
+        }
+        .domain-card-grid .domain-card,
+        .domain-card-grid .domain-card > .card {
             width: 100%;
             height: 100%;
-            min-width: 0;
-        }
-        .domain-card-grid > .domain-grid-item > .card > .card-header,
-        .domain-card-grid > .domain-grid-item > .card > .collapse {
-            flex-shrink: 0;
         }
         .domain-card-grid .card-placeholder {
             visibility: hidden;
             min-height: 1.5em;
         }
-        /* 列数由 renderGroup() 根据系统设置写入内联 important 样式，避免断点覆盖。 */
+        @media (max-width: 991.98px) {
+            .domain-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 767.98px) {
+            .domain-card-grid { grid-template-columns: minmax(0, 1fr); }
+        }
 </style>
 </head>
 <body>
