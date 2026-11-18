@@ -2736,6 +2736,16 @@ const getWhoisApiHTML = (title) => `
             }
 
             document.addEventListener('DOMContentLoaded', () => {
+        const hostingProviderSelect = document.getElementById('hostingProvider');
+        if (hostingProviderSelect) {
+            hostingProviderSelect.addEventListener('change', function () {
+                const otherInput = document.getElementById('hostingProviderOther');
+                if (!otherInput) return;
+                otherInput.style.display = this.value === '其他' ? '' : 'none';
+                if (this.value !== '其他') otherInput.value = '';
+            });
+        }
+
                 initTheme();
                 document.getElementById('themeToggleBtn').addEventListener('click', () => {
                     const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
@@ -4513,9 +4523,23 @@ const getHTMLContent = (title) => `
                             <input type="text" class="form-control" id="registeredAccount" placeholder="请输入注册该域名的账号/邮箱">
                         </div>
                         <div class="mb-3">
-                            <label for="cloudflareAccountNote" class="form-label"><i class="iconfont icon-cloud"></i> Cloudflare 托管账号备注</label>
-                            <input type="text" class="form-control" id="cloudflareAccountNote" maxlength="200" placeholder="例如：主账号、客户账号、账号邮箱或其他识别信息">
-                            <div class="form-text">记录该域名在 Cloudflare 中使用的托管账号，便于区分多个账号；可留空</div>
+                            <label for="hostingProvider" class="form-label"><i class="iconfont icon-cloud"></i> 托管商</label>
+                            <select class="form-select" id="hostingProvider">
+                                <option value="">未选择</option>
+                                <option value="Cloudflare">Cloudflare</option>
+                                <option value="DNSPod">DNSPod</option>
+                                <option value="阿里云 DNS">阿里云 DNS</option>
+                                <option value="华为云 DNS">华为云 DNS</option>
+                                <option value="腾讯云 DNS">腾讯云 DNS</option>
+                                <option value="GoDaddy">GoDaddy</option>
+                                <option value="Namecheap">Namecheap</option>
+                                <option value="DNSHE">DNSHE</option>
+                                <option value="ClouDNS">ClouDNS</option>
+                                <option value="EU.org">EU.org</option>
+                                <option value="其他">其他</option>
+                            </select>
+                            <input type="text" class="form-control mt-2" id="hostingProviderOther" maxlength="100" placeholder="请输入托管商名称" style="display:none">
+                            <div class="form-text">选择域名当前使用的 DNS/托管服务商；选择“其他”可填写名称</div>
                         </div>
                         <div class="mb-3">
                             <label for="domainCategory" class="form-label"><i class="iconfont icon-fenlei"></i> 分类</label>
@@ -5550,7 +5574,7 @@ const getHTMLContent = (title) => `
             
             try {
                 const cardLayout = telegramConfig.cardLayout || '4';
-                const numColumns = parseInt(cardLayout);
+                const numColumns = parseInt(cardLayout);\n                domainsRow.style.setProperty('--domain-card-columns', String(numColumns === 3 ? 3 : 4));
                 let html = '';
                 
                 for (let i = 0; i < numColumns; i++) {
@@ -5968,7 +5992,7 @@ const getHTMLContent = (title) => `
                 
                 // 创建域名卡片行容器
                 const domainsRow = document.createElement('div');
-                domainsRow.className = 'row g-2';
+                domainsRow.className = 'row g-2 domain-card-grid';
                 groupContainer.appendChild(domainsRow);
                 
                 // 根据配置决定列数
@@ -6287,7 +6311,8 @@ const getHTMLContent = (title) => `
                         '<div class="flex-grow-1" style="padding-right: ' + textPaddingRight + '; min-width: 0;">' +
                         (domain.registrar ? '<p class="card-text mb-1" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; display: block;"><i class="iconfont icon-house-chimney"></i><strong>注册厂商:</strong> ' + escapeHtml(domain.registrar) + '</p>' : '') +
                         (domain.registeredAccount ? '<p class="card-text mb-1" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; display: block;"><i class="iconfont icon-user"></i><strong>注册账号:</strong> ' + escapeHtml(domain.registeredAccount) + '</p>' : '') +
-                        (domain.cloudflareAccountNote ? '<p class="card-text mb-1" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; display: block;"><i class="iconfont icon-cloud"></i><strong>Cloudflare 托管账号备注:</strong> ' + escapeHtml(domain.cloudflareAccountNote) + '</p>' : '') +
+                        ((domain.hostingProvider || domain.cloudflareAccountNote) ? '<p class="card-text mb-1 hosting-provider-row" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; display: block;"><i class="iconfont icon-cloud"></i><strong>托管商:</strong> ' + escapeHtml(domain.hostingProvider || 'Cloudflare') + '</p>' : '<p class="card-text mb-1 hosting-provider-row card-placeholder" aria-hidden="true">&nbsp;</p>') +
+                        (domain.cloudflareAccountNote ? '<p class="card-text mb-1 legacy-hosting-note" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%;display:block;"><i class="iconfont icon-info-circle"></i><strong>旧备注:</strong> ' + escapeHtml(domain.cloudflareAccountNote) + '</p>' : '<p class="card-text mb-1 legacy-hosting-note card-placeholder" aria-hidden="true">&nbsp;</p>') +
                         (domain.registrationDate ? '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-calendar-days"></i><strong>注册时间:</strong>' + formatDate(domain.registrationDate) + '</p>' : '') +
                         '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-rili"></i><strong>到期日期:</strong>' + (domain.renewCycle && domain.renewCycle.unit === 'permanent' ? '永久' : formatDate(domain.expiryDate)) + '</p>' +
                         '<p class="card-text mb-1 text-nowrap" style="overflow: hidden; text-overflow: ellipsis;"><i class="iconfont icon-repeat"></i><strong>续期周期:</strong>' +
@@ -6477,7 +6502,7 @@ const getHTMLContent = (title) => `
             const registrationDate = document.getElementById('registrationDate').value;
             const registrar = document.getElementById('registrar').value;
             const registeredAccount = document.getElementById('registeredAccount').value;
-            const cloudflareAccountNote = document.getElementById('cloudflareAccountNote').value.trim();
+            const hostingProvider = document.getElementById('hostingProvider').value;\n            const hostingProviderOther = document.getElementById('hostingProviderOther').value.trim();\n            const cloudflareAccountNote = domainId ? ((domains.find(d => String(d.id) === String(domainId)) || {}).cloudflareAccountNote || '') : ''; // 保留旧记录，避免编辑时丢失历史备注
             const categoryId = document.getElementById('domainCategory').value || 'default';
             const customNote = document.getElementById('customNote').value;
             const noteColor = document.getElementById('noteColor').value;
@@ -6622,7 +6647,10 @@ const getHTMLContent = (title) => `
                     document.getElementById('registrationDate').value = domain.registrationDate !== undefined ? domain.registrationDate : '';
                     document.getElementById('registrar').value = domain.registrar !== undefined ? domain.registrar : '';
                     document.getElementById('registeredAccount').value = domain.registeredAccount !== undefined ? domain.registeredAccount : '';
-                    document.getElementById('cloudflareAccountNote').value = domain.cloudflareAccountNote || '';
+                    const hostingProviderValue = domain.hostingProvider || (domain.cloudflareAccountNote ? 'Cloudflare' : '');
+                    document.getElementById('hostingProvider').value = ['Cloudflare','DNSPod','阿里云 DNS','华为云 DNS','腾讯云 DNS','GoDaddy','Namecheap','DNSHE','ClouDNS','EU.org','其他'].includes(hostingProviderValue) ? hostingProviderValue : (hostingProviderValue ? '其他' : '');
+                    document.getElementById('hostingProviderOther').value = domain.hostingProviderOther || (hostingProviderValue && !['Cloudflare','DNSPod','阿里云 DNS','华为云 DNS','腾讯云 DNS','GoDaddy','Namecheap','DNSHE','ClouDNS','EU.org','其他'].includes(hostingProviderValue) ? hostingProviderValue : '');
+                    document.getElementById('hostingProviderOther').style.display = document.getElementById('hostingProvider').value === '其他' ? '' : 'none';
                     // 设置分类选择
                     updateCategorySelect(categories, domain.categoryId || 'default');
                     document.getElementById('customNote').value = domain.customNote !== undefined ? domain.customNote : '';
@@ -8218,7 +8246,7 @@ async function updateDomain(id, domainData) {
     registrationDate: domainData.registrationDate !== undefined ? (domainData.registrationDate || null) : domains[index].registrationDate,
     registrar: domainData.registrar !== undefined ? domainData.registrar : domains[index].registrar,
     registeredAccount: domainData.registeredAccount !== undefined ? domainData.registeredAccount : domains[index].registeredAccount,
-    cloudflareAccountNote: domainData.cloudflareAccountNote !== undefined ? domainData.cloudflareAccountNote : domains[index].cloudflareAccountNote,
+    cloudflareAccountNote: domainData.cloudflareAccountNote !== undefined ? domainData.cloudflareAccountNote : domains[index].cloudflareAccountNote,\n    hostingProvider: domainData.hostingProvider !== undefined ? domainData.hostingProvider : domains[index].hostingProvider,\n    hostingProviderOther: domainData.hostingProviderOther !== undefined ? domainData.hostingProviderOther : domains[index].hostingProviderOther,
     categoryId: domainData.categoryId !== undefined ? domainData.categoryId : domains[index].categoryId, // 添加分类ID处理
     customNote: domainData.customNote !== undefined ? domainData.customNote : domains[index].customNote, // 正确处理空字符串
     noteColor: domainData.noteColor !== undefined ? domainData.noteColor : domains[index].noteColor, // 添加备注颜色处理
@@ -9565,6 +9593,44 @@ function getSetupHTML() {
                 min-height: 100px;
                 max-height: 100px;
             }
+        }
+
+        /* 卡片等高：同一网格行以最高卡片为基准拉伸，不裁切内容 */
+        .domain-card-grid {
+            display: grid !important;
+            grid-template-columns: repeat(var(--domain-card-columns, 4), minmax(0, 1fr));
+            align-items: stretch;
+            gap: 12px;
+            margin-left: 0;
+            margin-right: 0;
+        }
+        .domain-card-grid > .domain-column {
+            display: contents !important;
+            width: auto;
+            max-width: none;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+        .domain-card-grid > .domain-column > .mb-2 {
+            display: flex;
+            min-width: 0;
+            height: 100%;
+            margin-bottom: 0 !important;
+        }
+        .domain-card-grid .domain-card,
+        .domain-card-grid .domain-card > .card {
+            width: 100%;
+            height: 100%;
+        }
+        .domain-card-grid .card-placeholder {
+            visibility: hidden;
+            min-height: 1.5em;
+        }
+        @media (max-width: 991.98px) {
+            .domain-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 767.98px) {
+            .domain-card-grid { grid-template-columns: minmax(0, 1fr); }
         }
 </style>
 </head>
