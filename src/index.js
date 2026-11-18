@@ -5996,10 +5996,14 @@ const getHTMLContent = (title) => `
                 groupContainer.appendChild(domainsRow);
                 
                 // 根据配置决定列数
-                const cardLayout = telegramConfig.cardLayout || '4';
-                const numColumns = parseInt(cardLayout);
-                // 卡片直接作为 CSS Grid 子项排列，避免旧版“按列堆叠”造成各列起始位置和行高不一致。
-                domainsRow.style.setProperty('--domain-card-columns', String(numColumns === 3 ? 3 : 4));
+                // 列数以服务端保存的系统设置为准，并在渲染时写入 important 内联样式，
+                // 避免媒体查询、主题样式或旧版 CSS 覆盖桌面端的 3/4 列设置。
+                const configuredColumns = Number.parseInt(telegramConfig.cardLayout, 10);
+                const numColumns = configuredColumns === 3 ? 3 : 4;
+                domainsRow.style.setProperty('--domain-card-columns', String(numColumns));
+                domainsRow.style.setProperty('display', 'grid', 'important');
+                domainsRow.style.setProperty('grid-template-columns', `repeat(${numColumns}, minmax(0, 1fr))`, 'important');
+                domainsRow.style.setProperty('grid-auto-flow', 'row', 'important');
                 
                 // 如果分类下没有域名，显示提示信息
                 if (groupDomains.length === 0) {
@@ -9604,13 +9608,7 @@ function getSetupHTML() {
             visibility: hidden;
             min-height: 1.5em;
         }
-        /* 桌面端始终遵循系统设置的 3/4 列；仅在真正窄屏时降列数 */
-        @media (max-width: 575.98px) {
-            .domain-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        }
-        @media (max-width: 399.98px) {
-            .domain-card-grid { grid-template-columns: minmax(0, 1fr); }
-        }
+        /* 列数由 renderGroup() 根据系统设置写入内联 important 样式，避免断点覆盖。 */
 </style>
 </head>
 <body>
